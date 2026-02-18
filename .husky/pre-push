@@ -1,0 +1,41 @@
+#!/usr/bin/env sh
+
+echo "🚀 Running pre-push checks..."
+
+# Run full build
+echo "🔨 Building project..."
+swift build 2>&1
+if [ $? -ne 0 ]; then
+    echo "❌ Build failed. Please fix build errors before pushing."
+    exit 1
+fi
+echo "✅ Build passed"
+
+# Run tests
+echo "🧪 Running tests..."
+swift test --quiet 2>&1
+if [ $? -ne 0 ]; then
+    echo "❌ Tests failed. Please fix failing tests before pushing."
+    exit 1
+fi
+echo "✅ All tests passed"
+
+# Optional: Run iOS simulator tests if xcodebuild is available
+if command -v xcodebuild &> /dev/null; then
+    # Check if we're set up for Xcode
+    if [ -d "WavefrontApp.xcodeproj" ]; then
+        echo "📱 Running iOS simulator tests..."
+        xcodebuild test \
+            -scheme WavefrontApp \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -quiet \
+            2>/dev/null
+        if [ $? -ne 0 ]; then
+            echo "⚠️  iOS tests failed (non-blocking)"
+        else
+            echo "✅ iOS tests passed"
+        fi
+    fi
+fi
+
+echo "✨ All pre-push checks passed! Ready to push."
