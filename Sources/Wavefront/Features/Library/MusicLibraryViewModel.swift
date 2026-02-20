@@ -9,8 +9,10 @@ public final class MusicLibraryViewModel: ObservableObject {
     @Published public private(set) var errorMessage: String?
     @Published public var currentTrack: AudioTrack?
     @Published public var isPlaying = false
+    @Published public var currentPlaybackTime: TimeInterval = 0
     @Published public var isEnrichingMetadata = false
     @Published public var youtubeDownloadProgress: Double?
+    @Published public var youtubeImportStatus: String?
     
     private let sourceManager: AudioSourceManager
     private let player: AudioPlayer
@@ -40,6 +42,9 @@ public final class MusicLibraryViewModel: ObservableObject {
             metadataService: MetadataService(),
             youtubeKitExtractor: ytKitExtractor
         )
+        
+        // Set up player delegate for time updates
+        player.delegate = self
         
         Task {
             await setupDefaultSources()
@@ -102,6 +107,41 @@ public final class MusicLibraryViewModel: ObservableObject {
     /// Clear error message
     public func clearError() {
         errorMessage = nil
+    }
+    
+    /// Set error message
+    public func setError(_ message: String) {
+        errorMessage = message
+    }
+    
+    /// Delete a track from the library and file system
+    public func deleteTrack(_ track: AudioTrack) {
+        // Stop playback if this track is playing
+        if currentTrack?.id == track.id {
+            stop()
+        }
+        
+        // Remove from tracks array
+        tracks.removeAll { $0.id == track.id }
+        
+        // Remove from liked songs if applicable
+        UserLibrary.shared.unlike(track)
+        
+        // Delete from file system if it's a local file
+        if track.sourceType == .local {
+            do {
+                try FileManager.default.removeItem(at: track.fileURL)
+            } catch {
+                setError("Could not delete file: \(error.localizedDescription)")
+            }
+        }
+    }
+    
+    /// Delete multiple tracks
+    public func deleteTracks(_ tracksToDelete: [AudioTrack]) {
+        for track in tracksToDelete {
+            deleteTrack(track)
+        }
     }
     
     /// Get tracks grouped by source type
@@ -297,18 +337,35 @@ public final class MusicLibraryViewModel: ObservableObject {
     }
     
     /// Import audio from a YouTube URL using native YouTubeKit extraction
+    /// Supports both single videos and playlists
     public func importFromYouTube(urlString: String) async throws {
         guard let extractor = youtubeKitExtractor else {
-            youtubeDownloadProgress = nil
             throw YouTubeKitError.extractionFailed("YouTube extractor not initialized")
         }
         
-        guard let videoID = await extractor.extractVideoID(from: urlString) else {
+        youtubeDownloadProgress = 0
+        youtubeImportStatus = "Analyzing URL..."
+        
+        // Ensure progress is always cleared, even on error
+        defer {
             youtubeDownloadProgress = nil
+            youtubeImportStatus = nil
+        }
+        
+        // Check if it's a playlist URL
+        if urlString.contains("list=") || urlString.contains("/playlist") {
+            try await importPlaylist(urlString: urlString, extractor: extractor)
+        } else {
+            try await importSingleVideo(urlString: urlString, extractor: extractor)
+        }
+    }
+    
+    private func importSingleVideo(urlString: String, extractor: YouTubeKitExtractor) async throws {
+        guard let videoID = await extractor.extractVideoID(from: urlString) else {
             throw YouTubeKitError.invalidURL
         }
         
-        youtubeDownloadProgress = 0
+        youtubeImportStatus = "Downloading audio..."
         
         let result = try await extractor.downloadAudio(
             videoID: videoID,
@@ -319,10 +376,12 @@ public final class MusicLibraryViewModel: ObservableObject {
             }
         }
         
+        youtubeImportStatus = "Processing..."
+        
         let track = AudioTrack(
             title: result.title,
-            artist: result.author,
-            album: result.album,
+            artist: result.author ?? "Unknown Artist",
+            album: result.album ?? "YouTube Downloads",
             duration: result.duration,
             fileURL: result.localURL,
             sourceType: .local
@@ -331,6 +390,91 @@ public final class MusicLibraryViewModel: ObservableObject {
         let enrichedTrack = await metadataService.enrichTrack(track)
         tracks.append(enrichedTrack)
         tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        youtubeDownloadProgress = nil
+    }
+    
+    private func importPlaylist(urlString: String, extractor: YouTubeKitExtractor) async throws {
+        youtubeImportStatus = "Fetching playlist..."
+        
+        let videoIDs = await extractor.extractPlaylistVideoIDs(from: urlString)
+        
+        guard !videoIDs.isEmpty else {
+            throw YouTubeKitError.extractionFailed("Could not extract videos from playlist")
+        }
+        
+        var successCount = 0
+        var failCount = 0
+        
+        for (index, videoID) in videoIDs.enumerated() {
+            youtubeImportStatus = "Downloading \(index + 1)/\(videoIDs.count)..."
+            youtubeDownloadProgress = Double(index) / Double(videoIDs.count)
+            
+            do {
+                let result = try await extractor.downloadAudio(
+                    videoID: videoID,
+                    quality: .high
+                ) { [weak self] progress in
+                    Task { @MainActor in
+                        let baseProgress = Double(index) / Double(videoIDs.count)
+                        let itemProgress = progress / Double(videoIDs.count)
+                        self?.youtubeDownloadProgress = baseProgress + itemProgress
+                    }
+                }
+                
+                let track = AudioTrack(
+                    title: result.title,
+                    artist: result.author ?? "Unknown Artist",
+                    album: result.album ?? "YouTube Downloads",
+                    duration: result.duration,
+                    fileURL: result.localURL,
+                    sourceType: .local
+                )
+                
+                let enrichedTrack = await metadataService.enrichTrack(track)
+                tracks.append(enrichedTrack)
+                successCount += 1
+            } catch {
+                failCount += 1
+                // Continue with next video
+            }
+        }
+        
+        tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        
+        if failCount > 0 {
+            setError("Imported \(successCount) tracks. \(failCount) failed.")
+        }
+    }
+}
+
+// MARK: - AudioPlayerDelegate
+
+extension MusicLibraryViewModel: AudioPlayerDelegate {
+    nonisolated public func audioPlayer(_ player: AudioPlayer, didChangeState state: PlaybackState) {
+        Task { @MainActor in
+            self.isPlaying = state == .playing
+            if state == .stopped {
+                self.currentPlaybackTime = 0
+            }
+        }
+    }
+    
+    nonisolated public func audioPlayer(_ player: AudioPlayer, didUpdateProgress currentTime: TimeInterval, duration: TimeInterval) {
+        Task { @MainActor in
+            self.currentPlaybackTime = currentTime
+        }
+    }
+    
+    nonisolated public func audioPlayer(_ player: AudioPlayer, didFinishPlaying track: AudioTrack) {
+        Task { @MainActor in
+            self.isPlaying = false
+            self.currentPlaybackTime = 0
+        }
+    }
+    
+    nonisolated public func audioPlayer(_ player: AudioPlayer, didFailWithError error: Error) {
+        Task { @MainActor in
+            self.setError("Playback failed: \(error.localizedDescription)")
+            self.isPlaying = false
+        }
     }
 }

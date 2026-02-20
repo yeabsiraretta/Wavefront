@@ -77,14 +77,13 @@ public actor YouTubeKitExtractor {
         
         progressHandler?(0.25)
         
-        // Download the audio file
+        // Download the audio file with retry logic
         let streamURL = audioStream.url
-        let (tempURL, response) = try await session.download(from: streamURL)
-        
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw YouTubeKitError.downloadFailed
-        }
+        let tempURL = try await downloadWithRetry(
+            url: streamURL,
+            maxRetries: 3,
+            progressHandler: progressHandler
+        )
         
         progressHandler?(0.9)
         
@@ -142,6 +141,48 @@ public actor YouTubeKitExtractor {
         return nil
     }
     
+    /// Extract video IDs from a YouTube playlist URL
+    /// Uses YouTube's playlist page to get video IDs
+    public func extractPlaylistVideoIDs(from urlString: String) async -> [String] {
+        guard let url = URL(string: urlString),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let listID = components.queryItems?.first(where: { $0.name == "list" })?.value else {
+            return []
+        }
+        
+        // Fetch playlist page and extract video IDs
+        let playlistURL = "https://www.youtube.com/playlist?list=\(listID)"
+        
+        guard let pageURL = URL(string: playlistURL) else { return [] }
+        
+        do {
+            let (data, _) = try await session.data(from: pageURL)
+            guard let html = String(data: data, encoding: .utf8) else { return [] }
+            
+            // Extract video IDs from playlist page
+            var videoIDs: [String] = []
+            let pattern = #"\"videoId\":\"([a-zA-Z0-9_-]{11})\""#
+            
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let range = NSRange(html.startIndex..., in: html)
+                let matches = regex.matches(in: html, range: range)
+                
+                for match in matches {
+                    if let idRange = Range(match.range(at: 1), in: html) {
+                        let videoID = String(html[idRange])
+                        if !videoIDs.contains(videoID) {
+                            videoIDs.append(videoID)
+                        }
+                    }
+                }
+            }
+            
+            return videoIDs
+        } catch {
+            return []
+        }
+    }
+    
     // MARK: - Private Methods
     
     private func selectBestAudioStream(from streams: [YouTubeKit.Stream], quality: Quality) -> YouTubeKit.Stream? {
@@ -184,6 +225,56 @@ public actor YouTubeKitExtractor {
             return duration.seconds
         } catch {
             return nil
+        }
+    }
+    
+    /// Download with retry logic for transient network failures
+    private func downloadWithRetry(
+        url: URL,
+        maxRetries: Int,
+        progressHandler: (@Sendable (Double) -> Void)?
+    ) async throws -> URL {
+        var lastError: Error = YouTubeKitError.downloadFailed
+        
+        for attempt in 0..<maxRetries {
+            do {
+                // Update progress based on attempt
+                let baseProgress = 0.25 + (Double(attempt) * 0.1)
+                progressHandler?(min(baseProgress, 0.85))
+                
+                let (tempURL, response) = try await session.download(from: url)
+                
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    throw YouTubeKitError.downloadFailed
+                }
+                
+                return tempURL
+            } catch let error as URLError where isRetryableError(error) {
+                lastError = error
+                // Exponential backoff: 1s, 2s, 4s
+                let delay = pow(2.0, Double(attempt))
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                continue
+            } catch {
+                throw error
+            }
+        }
+        
+        throw lastError
+    }
+    
+    /// Check if error is retryable (transient network issues)
+    private func isRetryableError(_ error: URLError) -> Bool {
+        switch error.code {
+        case .networkConnectionLost,      // -1005
+             .timedOut,                    // -1001
+             .cannotConnectToHost,         // -1004
+             .notConnectedToInternet,      // -1009
+             .dataNotAllowed:              // -1020
+            return true
+        default:
+            return false
         }
     }
     

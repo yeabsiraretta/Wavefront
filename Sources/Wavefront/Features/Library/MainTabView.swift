@@ -85,11 +85,19 @@ struct SongsTab: View {
                             track: track,
                             isPlaying: viewModel.currentTrack?.id == track.id,
                             isLiked: UserLibrary.shared.isLiked(track),
-                            onLike: { UserLibrary.shared.toggleLike(track) }
+                            onLike: { UserLibrary.shared.toggleLike(track) },
+                            onDelete: { viewModel.deleteTrack(track) }
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
                             viewModel.play(track)
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                viewModel.deleteTrack(track)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
                     }
                     .listStyle(.plain)
@@ -130,6 +138,7 @@ struct SongsTab: View {
                     NowPlayingBar(
                         track: viewModel.currentTrack,
                         isPlaying: viewModel.isPlaying,
+                        currentTime: viewModel.currentPlaybackTime,
                         onPlayPause: { viewModel.togglePlayPause() },
                         onStop: { viewModel.stop() }
                     )
@@ -140,11 +149,18 @@ struct SongsTab: View {
             YouTubeImportSheet(
                 url: $youtubeURL,
                 isLoading: viewModel.youtubeDownloadProgress != nil,
+                progress: viewModel.youtubeDownloadProgress,
+                importStatus: viewModel.youtubeImportStatus,
                 onImport: {
                     Task {
-                        try? await viewModel.importFromYouTube(urlString: youtubeURL)
-                        youtubeURL = ""
-                        showingYouTubeSheet = false
+                        do {
+                            try await viewModel.importFromYouTube(urlString: youtubeURL)
+                            youtubeURL = ""
+                            showingYouTubeSheet = false
+                        } catch {
+                            viewModel.setError("Import failed: \(error.localizedDescription)")
+                            showingYouTubeSheet = false
+                        }
                     }
                 },
                 onCancel: {
@@ -200,6 +216,7 @@ struct AlbumsTab: View {
                     NowPlayingBar(
                         track: viewModel.currentTrack,
                         isPlaying: viewModel.isPlaying,
+                        currentTime: viewModel.currentPlaybackTime,
                         onPlayPause: { viewModel.togglePlayPause() },
                         onStop: { viewModel.stop() }
                     )
@@ -252,11 +269,19 @@ struct AlbumDetailView: View {
                 track: track,
                 isPlaying: viewModel.currentTrack?.id == track.id,
                 isLiked: UserLibrary.shared.isLiked(track),
-                onLike: { UserLibrary.shared.toggleLike(track) }
+                onLike: { UserLibrary.shared.toggleLike(track) },
+                onDelete: { viewModel.deleteTrack(track) }
             )
             .contentShape(Rectangle())
             .onTapGesture {
                 viewModel.play(track)
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                Button(role: .destructive) {
+                    viewModel.deleteTrack(track)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
         .listStyle(.plain)
@@ -266,6 +291,7 @@ struct AlbumDetailView: View {
                 NowPlayingBar(
                     track: viewModel.currentTrack,
                     isPlaying: viewModel.isPlaying,
+                    currentTime: viewModel.currentPlaybackTime,
                     onPlayPause: { viewModel.togglePlayPause() },
                     onStop: { viewModel.stop() }
                 )
@@ -299,11 +325,19 @@ struct LikedSongsTab: View {
                             track: track,
                             isPlaying: viewModel.currentTrack?.id == track.id,
                             isLiked: true,
-                            onLike: { userLibrary.toggleLike(track) }
+                            onLike: { userLibrary.toggleLike(track) },
+                            onDelete: { viewModel.deleteTrack(track) }
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
                             viewModel.play(track)
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                viewModel.deleteTrack(track)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
                         }
                     }
                     .listStyle(.plain)
@@ -315,6 +349,7 @@ struct LikedSongsTab: View {
                     NowPlayingBar(
                         track: viewModel.currentTrack,
                         isPlaying: viewModel.isPlaying,
+                        currentTime: viewModel.currentPlaybackTime,
                         onPlayPause: { viewModel.togglePlayPause() },
                         onStop: { viewModel.stop() }
                     )
@@ -365,6 +400,7 @@ struct HistoryTab: View {
                     NowPlayingBar(
                         track: viewModel.currentTrack,
                         isPlaying: viewModel.isPlaying,
+                        currentTime: viewModel.currentPlaybackTime,
                         onPlayPause: { viewModel.togglePlayPause() },
                         onStop: { viewModel.stop() }
                     )

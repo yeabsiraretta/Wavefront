@@ -87,6 +87,7 @@ public struct MusicLibraryView: View {
                         NowPlayingBar(
                             track: viewModel.currentTrack,
                             isPlaying: viewModel.isPlaying,
+                            currentTime: viewModel.currentPlaybackTime,
                             onPlayPause: { viewModel.togglePlayPause() },
                             onStop: { viewModel.stop() }
                         )
@@ -109,11 +110,14 @@ public struct MusicLibraryView: View {
             YouTubeImportSheet(
                 url: $youtubeURL,
                 isLoading: viewModel.youtubeDownloadProgress != nil,
+                progress: viewModel.youtubeDownloadProgress,
+                importStatus: viewModel.youtubeImportStatus,
                 onImport: {
                     Task {
                         do {
                             try await viewModel.importFromYouTube(urlString: youtubeURL)
                             youtubeURL = ""
+                            showingYouTubeSheet = false
                         } catch {
                             // Error handled by viewModel
                         }
@@ -181,6 +185,7 @@ struct TrackRow: View {
     let isPlaying: Bool
     var isLiked: Bool = false
     var onLike: (() -> Void)? = nil
+    var onDelete: (() -> Void)? = nil
     
     var body: some View {
         HStack(spacing: 12) {
@@ -235,6 +240,24 @@ struct TrackRow: View {
                 .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 4)
+        .contextMenu {
+            if let onLike = onLike {
+                Button {
+                    onLike()
+                } label: {
+                    Label(isLiked ? "Unlike" : "Like", systemImage: isLiked ? "heart.slash" : "heart")
+                }
+            }
+            
+            if let onDelete = onDelete {
+                Divider()
+                Button(role: .destructive) {
+                    onDelete()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
     }
     
     private func formatDuration(_ seconds: TimeInterval) -> String {
@@ -244,16 +267,22 @@ struct TrackRow: View {
     }
 }
 
-/// Now playing bar at bottom
+/// Now playing bar at bottom - tappable to expand
 struct NowPlayingBar: View {
     let track: AudioTrack?
     let isPlaying: Bool
+    let currentTime: TimeInterval
     let onPlayPause: () -> Void
     let onStop: () -> Void
+    @State private var showingExpandedPlayer = false
+    @ObservedObject private var userLibrary = UserLibrary.shared
     
     var body: some View {
         if let track = track {
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
+                // Album artwork placeholder
+                AlbumArtworkView(track: track, size: 44)
+                
                 // Track info
                 VStack(alignment: .leading, spacing: 2) {
                     Text(track.title)
@@ -270,7 +299,7 @@ struct NowPlayingBar: View {
                 Spacer()
                 
                 // Controls
-                HStack(spacing: 20) {
+                HStack(spacing: 16) {
                     Button(action: onPlayPause) {
                         Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                             .font(.title2)
@@ -288,7 +317,199 @@ struct NowPlayingBar: View {
             .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
             .padding(.horizontal)
             .padding(.bottom, 8)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                showingExpandedPlayer = true
+            }
+            #if os(iOS)
+            .fullScreenCover(isPresented: $showingExpandedPlayer) {
+                ExpandedPlayerView(
+                    track: track,
+                    isPlaying: isPlaying,
+                    currentTime: currentTime,
+                    isLiked: userLibrary.isLiked(track),
+                    onPlayPause: onPlayPause,
+                    onStop: onStop,
+                    onLike: { userLibrary.toggleLike(track) },
+                    onDismiss: { showingExpandedPlayer = false }
+                )
+            }
+            #else
+            .sheet(isPresented: $showingExpandedPlayer) {
+                ExpandedPlayerView(
+                    track: track,
+                    isPlaying: isPlaying,
+                    currentTime: currentTime,
+                    isLiked: userLibrary.isLiked(track),
+                    onPlayPause: onPlayPause,
+                    onStop: onStop,
+                    onLike: { userLibrary.toggleLike(track) },
+                    onDismiss: { showingExpandedPlayer = false }
+                )
+                .frame(minWidth: 400, minHeight: 600)
+            }
+            #endif
         }
+    }
+}
+
+/// Expanded full-screen player view
+struct ExpandedPlayerView: View {
+    let track: AudioTrack
+    let isPlaying: Bool
+    let currentTime: TimeInterval
+    let isLiked: Bool
+    let onPlayPause: () -> Void
+    let onStop: () -> Void
+    let onLike: () -> Void
+    let onDismiss: () -> Void
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 32) {
+                Spacer()
+                
+                // Large album artwork
+                AlbumArtworkView(track: track, size: 280)
+                    .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
+                
+                // Track info
+                VStack(spacing: 8) {
+                    Text(track.title)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                    
+                    Text(track.artist ?? "Unknown Artist")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    
+                    if let album = track.album {
+                        Text(album)
+                            .font(.subheadline)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.horizontal)
+                
+                // Progress bar
+                VStack(spacing: 8) {
+                    ProgressView(value: progressValue, total: 1.0)
+                        .progressViewStyle(.linear)
+                        .tint(.primary)
+                    
+                    HStack {
+                        Text(formatTime(currentTime))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        
+                        Spacer()
+                        
+                        Text(formatTime(track.duration ?? 0))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 32)
+                
+                // Main controls
+                HStack(spacing: 48) {
+                    // Like button
+                    Button(action: onLike) {
+                        Image(systemName: isLiked ? "heart.fill" : "heart")
+                            .font(.title2)
+                            .foregroundStyle(isLiked ? .red : .primary)
+                    }
+                    
+                    // Stop button
+                    Button(action: onStop) {
+                        Image(systemName: "backward.end.fill")
+                            .font(.title)
+                    }
+                    
+                    // Play/Pause button
+                    Button(action: onPlayPause) {
+                        Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.system(size: 72))
+                    }
+                    
+                    // Forward button (placeholder)
+                    Button(action: {}) {
+                        Image(systemName: "forward.end.fill")
+                            .font(.title)
+                    }
+                    .disabled(true)
+                    .opacity(0.3)
+                    
+                    // Stop button
+                    Button(action: onStop) {
+                        Image(systemName: "stop.fill")
+                            .font(.title2)
+                    }
+                }
+                .padding(.vertical)
+                
+                Spacer()
+            }
+            .padding()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(action: onDismiss) {
+                        Image(systemName: "chevron.down")
+                            .font(.title2)
+                            .fontWeight(.semibold)
+                    }
+                }
+            }
+        }
+    }
+    
+    private var progressValue: Double {
+        guard let duration = track.duration, duration > 0 else { return 0 }
+        return min(currentTime / duration, 1.0)
+    }
+    
+    private func formatTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+/// Album artwork view with placeholder
+struct AlbumArtworkView: View {
+    let track: AudioTrack
+    let size: CGFloat
+    
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.1)
+                .fill(
+                    LinearGradient(
+                        colors: gradientColors,
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            
+            Image(systemName: "music.note")
+                .font(.system(size: size * 0.3))
+                .foregroundStyle(.white.opacity(0.8))
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: size * 0.1))
+    }
+    
+    private var gradientColors: [Color] {
+        // Generate consistent colors based on track title
+        let hash = abs(track.title.hashValue)
+        let hue1 = Double(hash % 360) / 360.0
+        let hue2 = Double((hash / 360) % 360) / 360.0
+        return [
+            Color(hue: hue1, saturation: 0.6, brightness: 0.7),
+            Color(hue: hue2, saturation: 0.7, brightness: 0.5)
+        ]
     }
 }
 
@@ -296,26 +517,34 @@ struct NowPlayingBar: View {
 struct YouTubeImportSheet: View {
     @Binding var url: String
     let isLoading: Bool
+    let progress: Double?
+    let importStatus: String?
     let onImport: () -> Void
     let onCancel: () -> Void
+    
+    private var isPlaylistURL: Bool {
+        url.contains("list=") || url.contains("/playlist")
+    }
     
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                Image(systemName: "play.rectangle.fill")
+                Image(systemName: isPlaylistURL ? "music.note.list" : "play.rectangle.fill")
                     .font(.system(size: 50))
                     .foregroundStyle(.red)
                 
-                Text("Import from YouTube")
+                Text(isPlaylistURL ? "Import Playlist" : "Import from YouTube")
                     .font(.title2)
                     .fontWeight(.semibold)
                 
-                Text("Paste a YouTube URL to import the audio track.")
+                Text(isPlaylistURL 
+                     ? "Import all tracks from a YouTube playlist."
+                     : "Paste a YouTube URL to import the audio track.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 
-                TextField("https://youtube.com/watch?v=...", text: $url)
+                TextField("https://youtube.com/watch?v=... or playlist URL", text: $url)
                     .textFieldStyle(.roundedBorder)
                     .autocorrectionDisabled()
                     #if os(iOS)
@@ -324,10 +553,25 @@ struct YouTubeImportSheet: View {
                     #endif
                 
                 if isLoading {
-                    ProgressView("Downloading...")
+                    VStack(spacing: 12) {
+                        if let progress = progress {
+                            ProgressView(value: progress, total: 1.0) {
+                                Text(importStatus ?? "Downloading...")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .progressViewStyle(.linear)
+                            
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ProgressView(importStatus ?? "Preparing...")
+                        }
+                    }
                 } else {
                     Button(action: onImport) {
-                        Text("Import")
+                        Text(isPlaylistURL ? "Import Playlist" : "Import")
                             .fontWeight(.semibold)
                             .frame(maxWidth: .infinity)
                     }
@@ -344,9 +588,11 @@ struct YouTubeImportSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
+                        .disabled(isLoading)
                 }
             }
         }
         .presentationDetents([.medium])
+        .interactiveDismissDisabled(isLoading)
     }
 }
