@@ -15,44 +15,30 @@ public final class MusicLibraryViewModel: ObservableObject {
     private let sourceManager: AudioSourceManager
     private let player: AudioPlayer
     private let metadataService: MetadataService
-    private let youtubeDownloader: YouTubeDownloader?
-    private var backendService: BackendYouTubeService?
-    
-    /// Backend API URL for YouTube imports (set to enable backend mode)
-    public var backendURL: URL? {
-        didSet {
-            if let url = backendURL {
-                backendService = try? BackendYouTubeService(
-                    configuration: .init(baseURL: url)
-                )
-            } else {
-                backendService = nil
-            }
-        }
-    }
+    private let youtubeKitExtractor: YouTubeKitExtractor?
     
     public init(
         sourceManager: AudioSourceManager,
         player: AudioPlayer,
         metadataService: MetadataService = MetadataService(),
-        youtubeDownloader: YouTubeDownloader? = nil
+        youtubeKitExtractor: YouTubeKitExtractor? = nil
     ) {
         self.sourceManager = sourceManager
         self.player = player
         self.metadataService = metadataService
-        self.youtubeDownloader = youtubeDownloader
+        self.youtubeKitExtractor = youtubeKitExtractor
     }
     
     /// Convenience initializer that creates default local source
     public convenience init() {
         let manager = AudioSourceManager()
         let player = AudioPlayer(sourceManager: manager)
-        let ytDownloader = try? YouTubeDownloader()
+        let ytKitExtractor = try? YouTubeKitExtractor()
         self.init(
             sourceManager: manager,
             player: player,
             metadataService: MetadataService(),
-            youtubeDownloader: ytDownloader
+            youtubeKitExtractor: ytKitExtractor
         )
         
         Task {
@@ -307,118 +293,44 @@ public final class MusicLibraryViewModel: ObservableObject {
     
     /// Check if YouTube downloading is available
     public var isYouTubeDownloadAvailable: Bool {
-        youtubeDownloader != nil
+        youtubeKitExtractor != nil
     }
     
-    /// Import audio from a YouTube URL
-    /// Uses backend service if configured, otherwise falls back to Invidious API
+    /// Import audio from a YouTube URL using native YouTubeKit extraction
     public func importFromYouTube(urlString: String) async throws {
-        youtubeDownloadProgress = 0
-        
-        // Try backend service first if configured
-        if let backend = backendService {
-            do {
-                let result = try await backend.importVideo(
-                    url: urlString,
-                    quality: "high"
-                ) { [weak self] progress in
-                    Task { @MainActor in
-                        self?.youtubeDownloadProgress = progress
-                    }
-                }
-                
-                let track = AudioTrack(
-                    title: result.title,
-                    artist: result.author,
-                    album: result.album,
-                    duration: result.duration,
-                    fileURL: result.localURL,
-                    sourceType: .local
-                )
-                
-                let enrichedTrack = await metadataService.enrichTrack(track)
-                tracks.append(enrichedTrack)
-                tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-                youtubeDownloadProgress = nil
-                return
-            } catch {
-                // Fall through to Invidious if backend fails
-                errorMessage = "Backend unavailable, trying fallback..."
-            }
-        }
-        
-        // Fallback to Invidious API
-        guard let downloader = youtubeDownloader else {
+        guard let extractor = youtubeKitExtractor else {
             youtubeDownloadProgress = nil
-            throw YouTubeError.extractionNotImplemented(
-                message: "YouTube downloader not initialized"
-            )
+            throw YouTubeKitError.extractionFailed("YouTube extractor not initialized")
         }
         
-        guard let videoID = await downloader.extractVideoID(from: urlString) else {
+        guard let videoID = await extractor.extractVideoID(from: urlString) else {
             youtubeDownloadProgress = nil
-            throw YouTubeError.invalidURL
-        }
-        
-        do {
-            // Download audio using Invidious API
-            let result = try await downloader.downloadAudio(
-                videoID: videoID,
-                quality: .high
-            ) { [weak self] progress in
-                Task { @MainActor in
-                    self?.youtubeDownloadProgress = progress
-                }
-            }
-            
-            // Create track from download result
-            let track = await downloader.createTrack(from: result)
-            
-            // Enrich with metadata from TheAudioDB
-            let enrichedTrack = await metadataService.enrichTrack(track)
-            
-            tracks.append(enrichedTrack)
-            tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-            
-            youtubeDownloadProgress = nil
-        } catch {
-            youtubeDownloadProgress = nil
-            errorMessage = "Import failed: \(error.localizedDescription)"
-            throw error
-        }
-    }
-    
-    /// Import from YouTube using a custom extractor
-    public func importFromYouTube(
-        urlString: String,
-        extractor: any YouTubeExtractor
-    ) async throws {
-        guard let downloader = youtubeDownloader else {
-            throw YouTubeError.extractionNotImplemented(
-                message: "YouTube downloader not initialized"
-            )
-        }
-        
-        guard let videoID = await downloader.extractVideoID(from: urlString) else {
-            throw YouTubeError.invalidURL
+            throw YouTubeKitError.invalidURL
         }
         
         youtubeDownloadProgress = 0
         
-        let result = try await downloader.downloadWithExtractor(
+        let result = try await extractor.downloadAudio(
             videoID: videoID,
-            extractor: extractor,
-            quality: .medium
+            quality: .high
         ) { [weak self] progress in
             Task { @MainActor in
                 self?.youtubeDownloadProgress = progress
             }
         }
         
-        let track = await downloader.createTrack(from: result)
-        tracks.append(track)
-        tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        let track = AudioTrack(
+            title: result.title,
+            artist: result.author,
+            album: result.album,
+            duration: result.duration,
+            fileURL: result.localURL,
+            sourceType: .local
+        )
         
+        let enrichedTrack = await metadataService.enrichTrack(track)
+        tracks.append(enrichedTrack)
+        tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         youtubeDownloadProgress = nil
     }
 }

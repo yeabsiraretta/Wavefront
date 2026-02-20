@@ -16,13 +16,16 @@ let package = Package(
     dependencies: [
         // AMSMB2 for SMB2/3 network share access
         // Using branch reference to allow unsafe flags from libsmb2
-        .package(url: "https://github.com/amosavian/AMSMB2.git", branch: "master")
+        .package(url: "https://github.com/amosavian/AMSMB2.git", branch: "master"),
+        // YouTubeKit for native YouTube stream extraction
+        .package(url: "https://github.com/alexeichhorn/YouTubeKit.git", from: "0.3.0")
     ],
     targets: [
         .target(
             name: "Wavefront",
             dependencies: [
-                .product(name: "AMSMB2", package: "AMSMB2")
+                .product(name: "AMSMB2", package: "AMSMB2"),
+                .product(name: "YouTubeKit", package: "YouTubeKit")
             ],
             path: "Sources/Wavefront"
         ),

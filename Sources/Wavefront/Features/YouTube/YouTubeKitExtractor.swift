@@ -1,0 +1,228 @@
+import Foundation
+import AVFoundation
+import YouTubeKit
+
+/// Native YouTube audio extractor using YouTubeKit
+/// Works fully in-process on iOS/macOS without external dependencies
+public actor YouTubeKitExtractor {
+    
+    private let session: URLSession
+    private let fileManager: FileManager
+    private let downloadDirectory: URL
+    
+    public init(fileManager: FileManager = .default) throws {
+        self.fileManager = fileManager
+        self.session = URLSession.shared
+        
+        self.downloadDirectory = try fileManager.url(
+            for: .documentDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ).appendingPathComponent("Music")
+        
+        try fileManager.createDirectory(at: downloadDirectory, withIntermediateDirectories: true)
+    }
+    
+    // MARK: - Public API
+    
+    /// Extract and download audio from a YouTube video
+    public func downloadAudio(
+        videoID: String,
+        quality: Quality = .high,
+        progressHandler: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> DownloadResult {
+        
+        progressHandler?(0.05)
+        
+        // Create YouTube object and fetch streams
+        let youtube = YouTube(videoID: videoID)
+        
+        let streams = try await youtube.streams
+        let metadata = try await youtube.metadata
+        
+        progressHandler?(0.15)
+        
+        // Filter for audio-only streams, prefer m4a
+        let audioStreams = streams.filterAudioOnly()
+        
+        guard let audioStream = selectBestAudioStream(from: audioStreams, quality: quality) else {
+            throw YouTubeKitError.noAudioStream
+        }
+        
+        progressHandler?(0.2)
+        
+        // Prepare destination
+        let artist = "Unknown Artist"
+        let title = metadata?.title ?? "Unknown Track"
+        let album = "YouTube Downloads"
+        
+        let albumDir = try getAlbumDirectory(artist: artist, album: album)
+        let sanitizedTitle = sanitizeFilename(title)
+        let fileExtension = audioStream.fileExtension.rawValue
+        let destinationURL = albumDir.appendingPathComponent("\(sanitizedTitle).\(fileExtension)")
+        
+        // Check if already downloaded
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            let duration = await getAudioDuration(url: destinationURL)
+            return DownloadResult(
+                localURL: destinationURL,
+                title: title,
+                duration: duration,
+                author: artist,
+                album: album,
+                thumbnailURL: metadata?.thumbnail?.url
+            )
+        }
+        
+        progressHandler?(0.25)
+        
+        // Download the audio file
+        let streamURL = audioStream.url
+        let (tempURL, response) = try await session.download(from: streamURL)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw YouTubeKitError.downloadFailed
+        }
+        
+        progressHandler?(0.9)
+        
+        // Move to destination
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+        try fileManager.moveItem(at: tempURL, to: destinationURL)
+        
+        progressHandler?(1.0)
+        
+        let duration = await getAudioDuration(url: destinationURL)
+        
+        return DownloadResult(
+            localURL: destinationURL,
+            title: title,
+            duration: duration,
+            author: artist,
+            album: album,
+            thumbnailURL: metadata?.thumbnail?.url
+        )
+    }
+    
+    /// Extract video ID from various YouTube URL formats
+    public func extractVideoID(from urlString: String) -> String? {
+        guard let url = URL(string: urlString) else { return nil }
+        
+        // Handle youtu.be format
+        if url.host?.contains("youtu.be") == true {
+            return url.pathComponents.last
+        }
+        
+        // Handle youtube.com format
+        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            // Check for 'v' parameter
+            if let videoID = components.queryItems?.first(where: { $0.name == "v" })?.value {
+                return videoID
+            }
+            
+            // Handle /embed/ format
+            if url.pathComponents.contains("embed"),
+               let index = url.pathComponents.firstIndex(of: "embed"),
+               url.pathComponents.count > index + 1 {
+                return url.pathComponents[index + 1]
+            }
+            
+            // Handle /v/ format
+            if url.pathComponents.contains("v"),
+               let index = url.pathComponents.firstIndex(of: "v"),
+               url.pathComponents.count > index + 1 {
+                return url.pathComponents[index + 1]
+            }
+        }
+        
+        return nil
+    }
+    
+    // MARK: - Private Methods
+    
+    private func selectBestAudioStream(from streams: [YouTubeKit.Stream], quality: Quality) -> YouTubeKit.Stream? {
+        let m4aStreams = streams.filter { $0.fileExtension == YouTubeKit.FileExtension.m4a }
+        let targetStreams = m4aStreams.isEmpty ? streams : m4aStreams
+        
+        guard !targetStreams.isEmpty else { return nil }
+        
+        // Use YouTubeKit's built-in helper methods for quality selection
+        switch quality {
+        case .high:
+            return targetStreams.highestAudioBitrateStream()
+        case .medium, .low:
+            return targetStreams.lowestAudioBitrateStream()
+        }
+    }
+    
+    private func getAlbumDirectory(artist: String?, album: String?) throws -> URL {
+        let artistFolder = sanitizeFilename(artist ?? "Unknown Artist")
+        let albumFolder = sanitizeFilename(album ?? "Unknown Album")
+        
+        let albumDir = downloadDirectory
+            .appendingPathComponent(artistFolder)
+            .appendingPathComponent(albumFolder)
+        
+        try fileManager.createDirectory(at: albumDir, withIntermediateDirectories: true)
+        return albumDir
+    }
+    
+    private func sanitizeFilename(_ name: String) -> String {
+        let invalidChars = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+        return name.components(separatedBy: invalidChars).joined(separator: "_")
+            .trimmingCharacters(in: .whitespaces)
+    }
+    
+    private func getAudioDuration(url: URL) async -> TimeInterval? {
+        let asset = AVAsset(url: url)
+        do {
+            let duration = try await asset.load(.duration)
+            return duration.seconds
+        } catch {
+            return nil
+        }
+    }
+    
+    // MARK: - Types
+    
+    public enum Quality: String, CaseIterable, Sendable {
+        case low = "low"
+        case medium = "medium"
+        case high = "high"
+    }
+    
+    public struct DownloadResult: Sendable {
+        public let localURL: URL
+        public let title: String
+        public let duration: TimeInterval?
+        public let author: String?
+        public let album: String?
+        public let thumbnailURL: URL?
+    }
+}
+
+// MARK: - Errors
+
+public enum YouTubeKitError: Error, LocalizedError {
+    case noAudioStream
+    case downloadFailed
+    case invalidURL
+    case extractionFailed(String)
+    
+    public var errorDescription: String? {
+        switch self {
+        case .noAudioStream:
+            return "No audio stream available"
+        case .downloadFailed:
+            return "Download failed"
+        case .invalidURL:
+            return "Invalid YouTube URL"
+        case .extractionFailed(let message):
+            return "Extraction failed: \(message)"
+        }
+    }
+}
