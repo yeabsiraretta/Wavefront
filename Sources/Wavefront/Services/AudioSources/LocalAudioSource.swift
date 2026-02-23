@@ -1,26 +1,66 @@
 import Foundation
 import AVFoundation
 
-/// Audio source for local device storage (Documents directory)
+/**
+ * Audio source implementation for local device storage.
+ *
+ * Provides access to audio files stored in the app's Documents directory
+ * or in user-selected folders via security-scoped bookmarks.
+ *
+ * ## Features
+ * - Scans directories recursively for audio files
+ * - Supports security-scoped bookmarks for sandbox access
+ * - Extracts metadata from audio files using AVFoundation
+ *
+ * ## Usage
+ * ```swift
+ * let source = try LocalAudioSource()
+ * let tracks = try await source.fetchTracks()
+ * ```
+ *
+ * @property sourceId - Unique identifier for this source
+ * @property displayName - Human-readable name for UI display
+ * @property baseDirectory - Root directory for scanning
+ * @property isSecurityScoped - Whether using security-scoped access
+ */
 public final class LocalAudioSource: AudioSource, @unchecked Sendable {
+    /// Unique identifier for this source instance
     public let sourceId: String
+    
+    /// Human-readable display name
     public let displayName: String
+    
+    /// Always returns .local for this source type
     public let sourceType: AudioSourceType = .local
     
     private let fileManager: FileManager
+    
+    /// Root directory for audio file scanning
     public let baseDirectory: URL
     
-    /// Whether this source uses a security-scoped bookmark (for user-selected folders)
+    /// Whether this source requires security-scoped resource access
     public let isSecurityScoped: Bool
     private var isAccessingSecurityScopedResource = false
     
+    /**
+     * Checks if the base directory exists and is accessible.
+     */
     public var isAvailable: Bool {
         get async {
             fileManager.fileExists(atPath: baseDirectory.path)
         }
     }
     
-    /// Initialize with the app's Documents directory
+    /**
+     * Initializes with the app's Documents directory.
+     *
+     * This is the default initializer for standard app storage.
+     *
+     * @param sourceId - Unique identifier (default: "local-storage")
+     * @param displayName - Display name (default: "Local Storage")
+     * @param fileManager - FileManager instance to use
+     * @throws Error if Documents directory cannot be accessed
+     */
     public init(
         sourceId: String = "local-storage",
         displayName: String = "Local Storage",

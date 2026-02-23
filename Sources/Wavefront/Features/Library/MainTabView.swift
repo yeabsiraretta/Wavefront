@@ -1,45 +1,72 @@
 import SwiftUI
 
-/// Main tab-based navigation view
+/**
+ * Main tab-based navigation view for the Wavefront app.
+ *
+ * Provides the primary navigation structure with tabs for Songs,
+ * Albums, Liked Songs, History, and Settings. Coordinates between
+ * the shared ViewModel and UserLibrary.
+ *
+ * ## Tabs
+ * - **Songs** - Full track library with search and import
+ * - **Albums** - Tracks grouped by album
+ * - **Liked** - User's liked/favorite songs
+ * - **History** - Recently played tracks
+ * - **Settings** - App configuration and audio sources
+ *
+ * ## Features
+ * - Shared ViewModel across all tabs
+ * - Automatic track refresh on launch
+ * - Listening history recording
+ * - Queue management with swipe gestures
+ * - Shared play sessions
+ *
+ * ## Usage
+ * ```swift
+ * MainTabView()
+ * ```
+ */
 @MainActor
 public struct MainTabView: View {
+    /// Shared ViewModel for all tabs
     @StateObject private var viewModel = MusicLibraryViewModel()
+    
+    /// Shared UserLibrary for liked songs and history
     @StateObject private var userLibrary = UserLibrary.shared
+    
+    /// Currently selected tab index
     @State private var selectedTab = 0
     
+    /**
+     * Creates a new MainTabView instance.
+     */
     public init() {}
     
     public var body: some View {
         TabView(selection: $selectedTab) {
-            SongsTab(viewModel: viewModel)
+            MediaTab(viewModel: viewModel)
                 .tabItem {
-                    Label("Songs", systemImage: "music.note.list")
+                    Label("Media", systemImage: "music.note.list")
                 }
                 .tag(0)
-            
-            AlbumsTab(viewModel: viewModel)
-                .tabItem {
-                    Label("Albums", systemImage: "square.stack")
-                }
-                .tag(1)
             
             LikedSongsTab(viewModel: viewModel, userLibrary: userLibrary)
                 .tabItem {
                     Label("Liked", systemImage: "heart.fill")
                 }
-                .tag(2)
+                .tag(1)
             
             HistoryTab(viewModel: viewModel, userLibrary: userLibrary)
                 .tabItem {
                     Label("History", systemImage: "clock.fill")
                 }
-                .tag(3)
+                .tag(2)
             
             SettingsTab(viewModel: viewModel)
                 .tabItem {
                     Label("Settings", systemImage: "gear")
                 }
-                .tag(4)
+                .tag(3)
         }
         .task {
             await viewModel.refreshTracks()
@@ -52,12 +79,368 @@ public struct MainTabView: View {
     }
 }
 
-// MARK: - Songs Tab
+// MARK: - Media Tab (Combined Songs & Albums)
+
+/// Combined media tab with Songs and Albums selection
+struct MediaTab: View {
+    @ObservedObject var viewModel: MusicLibraryViewModel
+    @State private var selectedMediaType: MediaType = .songs
+    @State private var showingYouTubeSheet = false
+    @State private var showingSpotifySheet = false
+    @State private var showingThoughtsSheet = false
+    @State private var showingAlbumArtSheet = false
+    @State private var selectedTrackForArt: AudioTrack?
+    @State private var selectedTrackForThoughts: AudioTrack?
+    @State private var showingSharedPlaySheet = false
+    @State private var showingTrackNotesSheet = false
+    @State private var selectedTrackForNotes: AudioTrack?
+    @State private var youtubeURL = ""
+    @State private var spotifyURL = ""
+    @State private var searchText = ""
+    
+    enum MediaType: String, CaseIterable {
+        case songs = "Songs"
+        case albums = "Albums"
+    }
+    
+    var filteredTracks: [AudioTrack] {
+        if searchText.isEmpty {
+            return viewModel.tracks
+        }
+        return viewModel.tracks.filter {
+            $0.title.localizedCaseInsensitiveContains(searchText) ||
+            ($0.artist?.localizedCaseInsensitiveContains(searchText) ?? false) ||
+            ($0.album?.localizedCaseInsensitiveContains(searchText) ?? false)
+        }
+    }
+    
+    var albums: [Album] {
+        Album.groupTracks(viewModel.tracks)
+    }
+    
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Media type selector
+                Picker("Media Type", selection: $selectedMediaType) {
+                    ForEach(MediaType.allCases, id: \.self) { type in
+                        Text(type.rawValue).tag(type)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding()
+                
+                // Content based on selection
+                Group {
+                    switch selectedMediaType {
+                    case .songs:
+                        songsContent
+                    case .albums:
+                        albumsContent
+                    }
+                }
+            }
+            .navigationTitle("Media")
+            .searchable(text: $searchText, prompt: "Search music")
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button {
+                            Task { await viewModel.refreshTracks() }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        
+                        Button {
+                            Task { await viewModel.enrichAllMetadata() }
+                        } label: {
+                            Label("Fetch Metadata", systemImage: "info.circle")
+                        }
+                        
+                        Divider()
+                        
+                        Button {
+                            showingYouTubeSheet = true
+                        } label: {
+                            Label("Import from YouTube", systemImage: "play.rectangle")
+                        }
+                        
+                        Button {
+                            showingSpotifySheet = true
+                        } label: {
+                            Label("Import from Spotify", systemImage: "music.note")
+                        }
+                        
+                        Divider()
+                        
+                        Button {
+                            showingSharedPlaySheet = true
+                        } label: {
+                            Label("Shared Play", systemImage: "person.2.wave.2")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if viewModel.currentTrack != nil {
+                    NowPlayingBar(
+                        track: viewModel.currentTrack,
+                        isPlaying: viewModel.isPlaying,
+                        currentTime: viewModel.currentPlaybackTime,
+                        onPlayPause: { viewModel.togglePlayPause() },
+                        onStop: { viewModel.stop() }
+                    )
+                }
+            }
+        }
+        .sheet(isPresented: $showingYouTubeSheet) {
+            YouTubeImportSheet(
+                url: $youtubeURL,
+                isLoading: viewModel.youtubeDownloadProgress != nil,
+                progress: viewModel.youtubeDownloadProgress,
+                importStatus: viewModel.youtubeImportStatus,
+                onImport: {
+                    Task {
+                        do {
+                            try await viewModel.importFromYouTube(urlString: youtubeURL)
+                            youtubeURL = ""
+                            showingYouTubeSheet = false
+                        } catch {
+                            viewModel.setError("YouTube import failed: \(error.localizedDescription)")
+                            showingYouTubeSheet = false
+                        }
+                    }
+                },
+                onCancel: {
+                    showingYouTubeSheet = false
+                    youtubeURL = ""
+                }
+            )
+        }
+        .sheet(isPresented: $showingSpotifySheet) {
+            SpotifyImportSheet(
+                url: $spotifyURL,
+                isLoading: viewModel.spotifyDownloadProgress != nil,
+                progress: viewModel.spotifyDownloadProgress,
+                importStatus: viewModel.spotifyImportStatus,
+                onImport: {
+                    Task {
+                        do {
+                            try await viewModel.importFromSpotify(urlString: spotifyURL)
+                            spotifyURL = ""
+                            showingSpotifySheet = false
+                        } catch {
+                            viewModel.setError("Spotify import failed: \(error.localizedDescription)")
+                            showingSpotifySheet = false
+                        }
+                    }
+                },
+                onCancel: {
+                    showingSpotifySheet = false
+                    spotifyURL = ""
+                }
+            )
+        }
+        .sheet(isPresented: $showingThoughtsSheet) {
+            MusicThoughtsSheet(
+                onSave: { thought in
+                    viewModel.saveMusicThought(thought)
+                    showingThoughtsSheet = false
+                },
+                onCancel: {
+                    showingThoughtsSheet = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingAlbumArtSheet) {
+            if let track = selectedTrackForArt {
+                AlbumArtSheet(
+                    track: track,
+                    onSave: { imageData in
+                        viewModel.setAlbumArt(for: track, imageData: imageData)
+                        showingAlbumArtSheet = false
+                        selectedTrackForArt = nil
+                    },
+                    onCancel: {
+                        showingAlbumArtSheet = false
+                        selectedTrackForArt = nil
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $showingSharedPlaySheet) {
+            SharedPlayView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showingTrackNotesSheet) {
+            if let track = selectedTrackForNotes {
+                TrackNotesSheet(
+                    track: track,
+                    thoughts: viewModel.getThoughtsForTrack(track),
+                    onDismiss: {
+                        showingTrackNotesSheet = false
+                        selectedTrackForNotes = nil
+                    }
+                )
+            }
+        }
+        .alert("Notice", isPresented: .init(
+            get: { viewModel.errorMessage != nil },
+            set: { if !$0 { viewModel.clearError() } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(viewModel.errorMessage ?? "")
+        }
+    }
+    
+    // MARK: - Songs Content
+    
+    @ViewBuilder
+    private var songsContent: some View {
+        if viewModel.isLoading {
+            ProgressView("Loading music...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if viewModel.tracks.isEmpty {
+            EmptyLibraryView()
+        } else {
+            List(filteredTracks) { track in
+                TrackRow(
+                    track: track,
+                    isPlaying: viewModel.currentTrack?.id == track.id,
+                    isLiked: UserLibrary.shared.isLiked(track),
+                    onLike: { UserLibrary.shared.toggleLike(track) },
+                    onDelete: { viewModel.deleteTrack(track) }
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    viewModel.play(track)
+                }
+                .contextMenu {
+                    if viewModel.isInQueue(track) {
+                        Button {
+                            viewModel.removeFromQueue(track)
+                        } label: {
+                            Label("Remove from Queue", systemImage: "minus.circle")
+                        }
+                    } else {
+                        Button {
+                            viewModel.addToQueue(track)
+                        } label: {
+                            Label("Add to Queue", systemImage: "text.badge.plus")
+                        }
+                    }
+                    
+                    Divider()
+                    
+                    Button {
+                        selectedTrackForThoughts = track
+                        showingThoughtsSheet = true
+                    } label: {
+                        Label("Write Thoughts", systemImage: "pencil.and.scribble")
+                    }
+                    
+                    Button {
+                        selectedTrackForNotes = track
+                        showingTrackNotesSheet = true
+                    } label: {
+                        let noteCount = viewModel.getThoughtsForTrack(track).count
+                        Label("View Notes (\(noteCount))", systemImage: "note.text")
+                    }
+                    
+                    Button {
+                        selectedTrackForArt = track
+                        showingAlbumArtSheet = true
+                    } label: {
+                        Label("Set Album Art", systemImage: "photo")
+                    }
+                    
+                    Button {
+                        UserLibrary.shared.toggleLike(track)
+                    } label: {
+                        Label(
+                            UserLibrary.shared.isLiked(track) ? "Unlike" : "Like",
+                            systemImage: UserLibrary.shared.isLiked(track) ? "heart.slash" : "heart"
+                        )
+                    }
+                    
+                    Divider()
+                    
+                    Button(role: .destructive) {
+                        viewModel.deleteTrack(track)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        viewModel.deleteTrack(track)
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    if viewModel.isInQueue(track) {
+                        Button {
+                            viewModel.removeFromQueue(track)
+                        } label: {
+                            Label("Unqueue", systemImage: "minus.circle")
+                        }
+                        .tint(.orange)
+                    } else {
+                        Button {
+                            viewModel.addToQueue(track)
+                        } label: {
+                            Label("Queue", systemImage: "text.badge.plus")
+                        }
+                        .tint(.blue)
+                    }
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+    
+    // MARK: - Albums Content
+    
+    @ViewBuilder
+    private var albumsContent: some View {
+        if viewModel.isLoading {
+            ProgressView("Loading...")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if albums.isEmpty {
+            EmptyStateView(
+                title: "No Albums",
+                systemImage: "square.stack",
+                description: "Import music to see albums here."
+            )
+        } else {
+            List(albums) { album in
+                NavigationLink(destination: AlbumDetailView(album: album, viewModel: viewModel)) {
+                    AlbumRow(album: album)
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+}
+
+// MARK: - Songs Tab (Legacy - kept for compatibility)
 
 struct SongsTab: View {
     @ObservedObject var viewModel: MusicLibraryViewModel
     @State private var showingYouTubeSheet = false
+    @State private var showingSpotifySheet = false
+    @State private var showingThoughtsSheet = false
+    @State private var showingAlbumArtSheet = false
+    @State private var selectedTrackForArt: AudioTrack?
+    @State private var selectedTrackForThoughts: AudioTrack?
+    @State private var showingSharedPlaySheet = false
+    @State private var showingTrackNotesSheet = false
+    @State private var selectedTrackForNotes: AudioTrack?
     @State private var youtubeURL = ""
+    @State private var spotifyURL = ""
     @State private var searchText = ""
     
     var filteredTracks: [AudioTrack] {
@@ -92,11 +475,89 @@ struct SongsTab: View {
                         .onTapGesture {
                             viewModel.play(track)
                         }
+                        .onLongPressGesture(minimumDuration: 1.0) {
+                            selectedTrackForThoughts = track
+                            showingThoughtsSheet = true
+                        }
+                        .contextMenu {
+                            // Queue actions
+                            if viewModel.isInQueue(track) {
+                                Button {
+                                    viewModel.removeFromQueue(track)
+                                } label: {
+                                    Label("Remove from Queue", systemImage: "minus.circle")
+                                }
+                            } else {
+                                Button {
+                                    viewModel.addToQueue(track)
+                                } label: {
+                                    Label("Add to Queue", systemImage: "text.badge.plus")
+                                }
+                            }
+                            
+                            Divider()
+                            
+                            Button {
+                                selectedTrackForThoughts = track
+                                showingThoughtsSheet = true
+                            } label: {
+                                Label("Write Thoughts", systemImage: "pencil.and.scribble")
+                            }
+                            
+                            Button {
+                                selectedTrackForNotes = track
+                                showingTrackNotesSheet = true
+                            } label: {
+                                let noteCount = viewModel.getThoughtsForTrack(track).count
+                                Label("View Notes (\(noteCount))", systemImage: "note.text")
+                            }
+                            
+                            Button {
+                                selectedTrackForArt = track
+                                showingAlbumArtSheet = true
+                            } label: {
+                                Label("Set Album Art", systemImage: "photo")
+                            }
+                            
+                            Button {
+                                UserLibrary.shared.toggleLike(track)
+                            } label: {
+                                Label(
+                                    UserLibrary.shared.isLiked(track) ? "Unlike" : "Like",
+                                    systemImage: UserLibrary.shared.isLiked(track) ? "heart.slash" : "heart"
+                                )
+                            }
+                            
+                            Divider()
+                            
+                            Button(role: .destructive) {
+                                viewModel.deleteTrack(track)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
                                 viewModel.deleteTrack(track)
                             } label: {
                                 Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                            if viewModel.isInQueue(track) {
+                                Button {
+                                    viewModel.removeFromQueue(track)
+                                } label: {
+                                    Label("Unqueue", systemImage: "minus.circle")
+                                }
+                                .tint(.orange)
+                            } else {
+                                Button {
+                                    viewModel.addToQueue(track)
+                                } label: {
+                                    Label("Queue", systemImage: "text.badge.plus")
+                                }
+                                .tint(.blue)
                             }
                         }
                     }
@@ -127,6 +588,26 @@ struct SongsTab: View {
                             showingYouTubeSheet = true
                         } label: {
                             Label("Import from YouTube", systemImage: "play.rectangle")
+                        }
+                        
+                        Button {
+                            showingSpotifySheet = true
+                        } label: {
+                            Label("Import from Spotify", systemImage: "music.note")
+                        }
+                        
+                        Divider()
+                        
+                        Button {
+                            showingThoughtsSheet = true
+                        } label: {
+                            Label("Music Thoughts", systemImage: "pencil.and.scribble")
+                        }
+                        
+                        Button {
+                            showingSharedPlaySheet = true
+                        } label: {
+                            Label("Shared Play", systemImage: "airplayaudio")
                         }
                     } label: {
                         Image(systemName: "ellipsis.circle")
@@ -168,6 +649,72 @@ struct SongsTab: View {
                     youtubeURL = ""
                 }
             )
+        }
+        .sheet(isPresented: $showingSpotifySheet) {
+            SpotifyImportSheet(
+                url: $spotifyURL,
+                isLoading: viewModel.spotifyDownloadProgress != nil,
+                progress: viewModel.spotifyDownloadProgress,
+                importStatus: viewModel.spotifyImportStatus,
+                onImport: {
+                    Task {
+                        do {
+                            try await viewModel.importFromSpotify(urlString: spotifyURL)
+                            spotifyURL = ""
+                            showingSpotifySheet = false
+                        } catch {
+                            viewModel.setError("Spotify import failed: \(error.localizedDescription)")
+                            showingSpotifySheet = false
+                        }
+                    }
+                },
+                onCancel: {
+                    showingSpotifySheet = false
+                    spotifyURL = ""
+                }
+            )
+        }
+        .sheet(isPresented: $showingThoughtsSheet) {
+            MusicThoughtsSheet(
+                onSave: { thought in
+                    viewModel.saveMusicThought(thought)
+                    showingThoughtsSheet = false
+                },
+                onCancel: {
+                    showingThoughtsSheet = false
+                }
+            )
+        }
+        .sheet(isPresented: $showingAlbumArtSheet) {
+            if let track = selectedTrackForArt {
+                AlbumArtSheet(
+                    track: track,
+                    onSave: { imageData in
+                        viewModel.setAlbumArt(for: track, imageData: imageData)
+                        showingAlbumArtSheet = false
+                        selectedTrackForArt = nil
+                    },
+                    onCancel: {
+                        showingAlbumArtSheet = false
+                        selectedTrackForArt = nil
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $showingSharedPlaySheet) {
+            SharedPlayView(viewModel: viewModel)
+        }
+        .sheet(isPresented: $showingTrackNotesSheet) {
+            if let track = selectedTrackForNotes {
+                TrackNotesSheet(
+                    track: track,
+                    thoughts: viewModel.getThoughtsForTrack(track),
+                    onDismiss: {
+                        showingTrackNotesSheet = false
+                        selectedTrackForNotes = nil
+                    }
+                )
+            }
         }
         .alert("Notice", isPresented: .init(
             get: { viewModel.errorMessage != nil },

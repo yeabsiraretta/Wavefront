@@ -2,7 +2,16 @@ import Foundation
 import AVFoundation
 import MediaPlayer
 
-/// Playback state of the audio player
+/**
+ * Represents the current state of audio playback.
+ *
+ * @case idle - Player is initialized but no track is loaded
+ * @case loading - A track is being loaded for playback
+ * @case playing - Audio is currently playing
+ * @case paused - Playback is paused
+ * @case stopped - Playback has been stopped
+ * @case failed - Playback failed with an associated error message
+ */
 public enum PlaybackState: Equatable, Sendable {
     case idle
     case loading
@@ -12,15 +21,64 @@ public enum PlaybackState: Equatable, Sendable {
     case failed(String)
 }
 
-/// Delegate for audio player events
+/**
+ * Protocol for receiving audio player events.
+ *
+ * Implement this protocol to receive callbacks for playback state changes,
+ * progress updates, track completion, and errors.
+ */
 public protocol AudioPlayerDelegate: AnyObject, Sendable {
+    /**
+     * Called when the playback state changes.
+     * @param player - The AudioPlayer instance
+     * @param state - The new PlaybackState
+     */
     func audioPlayer(_ player: AudioPlayer, didChangeState state: PlaybackState)
+    
+    /**
+     * Called periodically during playback with current progress.
+     * @param player - The AudioPlayer instance
+     * @param currentTime - Current playback position in seconds
+     * @param duration - Total duration of the track in seconds
+     */
     func audioPlayer(_ player: AudioPlayer, didUpdateProgress currentTime: TimeInterval, duration: TimeInterval)
+    
+    /**
+     * Called when a track finishes playing.
+     * @param player - The AudioPlayer instance
+     * @param track - The track that finished playing
+     */
     func audioPlayer(_ player: AudioPlayer, didFinishPlaying track: AudioTrack)
+    
+    /**
+     * Called when a playback error occurs.
+     * @param player - The AudioPlayer instance
+     * @param error - The error that occurred
+     */
     func audioPlayer(_ player: AudioPlayer, didFailWithError error: Error)
 }
 
-/// Audio player service using AVPlayer for playback
+/**
+ * Audio player service using AVPlayer for playback.
+ *
+ * This class provides a high-level interface for audio playback with
+ * support for local and remote audio files. It integrates with the
+ * system's Now Playing info center and remote command center.
+ *
+ * ## Features
+ * - AVPlayer-based playback for broad format support
+ * - Periodic time updates via delegate
+ * - Now Playing info integration
+ * - Remote control support (play/pause, seek, etc.)
+ * - Volume control
+ *
+ * ## Usage
+ * ```swift
+ * let player = AudioPlayer(sourceManager: manager)
+ * player.delegate = self
+ * await player.play(track)
+ * ```
+ */
 public final class AudioPlayer: NSObject, @unchecked Sendable {
     public weak var delegate: AudioPlayerDelegate?
     

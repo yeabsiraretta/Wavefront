@@ -2,14 +2,43 @@ import Foundation
 import AVFoundation
 import YouTubeKit
 
-/// Native YouTube audio extractor using YouTubeKit
-/// Works fully in-process on iOS/macOS without external dependencies
+/**
+ * Native YouTube audio extractor using YouTubeKit.
+ *
+ * Downloads audio from YouTube videos entirely in-process without
+ * external dependencies. Supports video search, stream extraction,
+ * and audio download with quality selection.
+ *
+ * ## Features
+ * - Video metadata extraction
+ * - Audio stream selection by quality
+ * - Progressive download with progress reporting
+ * - Automatic retry on network failures
+ * - File organization by artist/album
+ *
+ * ## Usage
+ * ```swift
+ * let extractor = try YouTubeKitExtractor()
+ * let result = try await extractor.downloadAudio(videoID: "dQw4w9WgXcQ")
+ * ```
+ *
+ * @note This actor is thread-safe for concurrent access.
+ */
 public actor YouTubeKitExtractor {
     
     private let session: URLSession
     private let fileManager: FileManager
     private let downloadDirectory: URL
     
+    /**
+     * Initializes the YouTubeKitExtractor.
+     *
+     * Creates the download directory in the app's Documents folder
+     * if it doesn't already exist.
+     *
+     * @param fileManager - FileManager instance to use
+     * @throws Error if the download directory cannot be created
+     */
     public init(fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
         self.session = URLSession.shared

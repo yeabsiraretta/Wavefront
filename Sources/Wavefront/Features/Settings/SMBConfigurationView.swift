@@ -1,8 +1,35 @@
 import SwiftUI
 
-/// Sheet for configuring SMB server connections
+/**
+ * Sheet view for configuring SMB server connections.
+ *
+ * Provides a form-based interface for entering SMB server details
+ * including address, share name, credentials, and base path.
+ *
+ * ## Features
+ * - Server address and share name input
+ * - Optional authentication credentials
+ * - Base path configuration
+ * - Input validation before save
+ *
+ * ## Usage
+ * ```swift
+ * SMBConfigurationSheet(
+ *     isPresented: $showingSheet,
+ *     onSave: { config in
+ *         // Use the configuration
+ *     }
+ * )
+ * ```
+ *
+ * @property isPresented - Binding to control sheet visibility
+ * @property onSave - Callback with completed SMBConfiguration
+ */
 struct SMBConfigurationSheet: View {
+    /// Binding to control sheet presentation
     @Binding var isPresented: Bool
+    
+    /// Callback invoked when user saves a valid configuration
     let onSave: (SMBConfiguration) -> Void
     
     @State private var serverAddress = ""

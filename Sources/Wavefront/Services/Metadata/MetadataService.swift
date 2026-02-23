@@ -1,19 +1,54 @@
 import Foundation
 
-/// Service for enriching track metadata using TheAudioDB API
+/**
+ * Service for enriching track metadata using TheAudioDB API.
+ *
+ * Fetches additional metadata like album art, genre, and descriptions
+ * from TheAudioDB public API. Results are cached to minimize API calls.
+ *
+ * ## Features
+ * - Track metadata lookup by artist and title
+ * - Album metadata and artwork lookup
+ * - In-memory caching of results
+ * - Automatic track enrichment
+ *
+ * ## API Key
+ * Uses the free tier API key "2" by default. For production use,
+ * obtain a proper API key from TheAudioDB.
+ *
+ * ## Usage
+ * ```swift
+ * let service = MetadataService()
+ * let metadata = try await service.searchTrack(artist: "Artist", track: "Song")
+ * ```
+ */
 public actor MetadataService {
     private let baseURL = "https://theaudiodb.com/api/v1/json"
     private let apiKey: String
     private let session: URLSession
     private var cache: [String: TrackMetadata] = [:]
     
-    /// Initialize with API key (use "2" for free tier testing)
+    /**
+     * Initializes the MetadataService with an API key.
+     *
+     * @param apiKey - TheAudioDB API key (default: "2" for free tier)
+     * @param session - URLSession for network requests
+     */
     public init(apiKey: String = "2", session: URLSession = .shared) {
         self.apiKey = apiKey
         self.session = session
     }
     
-    /// Search for track metadata by artist and track name
+    /**
+     * Searches for track metadata by artist and track name.
+     *
+     * Results are cached by artist:track key for subsequent lookups.
+     *
+     * @param artist - The artist name to search
+     * @param track - The track title to search
+     * @returns TrackMetadata if found, nil otherwise
+     * @throws MetadataError if the request fails
+     */
     public func searchTrack(artist: String, track: String) async throws -> TrackMetadata? {
         let cacheKey = "\(artist.lowercased()):\(track.lowercased())"
         

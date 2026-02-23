@@ -1,7 +1,12 @@
 import Foundation
 import AMSMB2
 
-/// Actor to manage SMB client state safely
+/**
+ * Actor to manage SMB client state thread-safely.
+ *
+ * Wraps the SMB2Manager to ensure safe concurrent access
+ * from multiple tasks.
+ */
 private actor SMBClientManager {
     private var client: SMB2Manager?
     
@@ -9,10 +14,40 @@ private actor SMBClientManager {
     func setClient(_ newClient: SMB2Manager?) { client = newClient }
 }
 
-/// Audio source for SMB network shares
+/**
+ * Audio source implementation for SMB/CIFS network shares.
+ *
+ * Provides access to audio files stored on SMB network shares
+ * using the AMSMB2 library. Files are cached locally for playback.
+ *
+ * ## Features
+ * - SMB2/3 protocol support via AMSMB2
+ * - Automatic file caching for playback
+ * - Recursive directory scanning
+ * - Credential-based authentication
+ *
+ * ## Usage
+ * ```swift
+ * let config = SMBConfiguration(
+ *     serverURL: URL(string: "smb://192.168.1.1")!,
+ *     shareName: "Music"
+ * )
+ * let source = try SMBAudioSource(configuration: config)
+ * let tracks = try await source.fetchTracks()
+ * ```
+ *
+ * @property sourceId - Unique identifier based on server and share
+ * @property displayName - Human-readable name for UI
+ * @property configuration - SMB connection configuration
+ */
 public final class SMBAudioSource: AudioSource, @unchecked Sendable {
+    /// Unique identifier for this SMB source
     public let sourceId: String
+    
+    /// Human-readable display name
     public let displayName: String
+    
+    /// Always returns .smb for this source type
     public let sourceType: AudioSourceType = .smb
     
     private let configuration: SMBConfiguration
