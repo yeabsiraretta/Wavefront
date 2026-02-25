@@ -1,7 +1,9 @@
-# Swift/Xcode
+# Swift/Xcode Build
 .build/
 .swiftpm/
 DerivedData/
+*.xcodeproj/
+*.xcworkspace/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcshareddata/
