@@ -41,7 +41,14 @@ public actor YouTubeKitExtractor {
      */
     public init(fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
-        self.session = URLSession.shared
+        
+        // Configure URLSession for faster downloads
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 30
+        config.timeoutIntervalForResource = 300 // 5 minutes max per download
+        config.httpMaximumConnectionsPerHost = 6
+        config.waitsForConnectivity = true
+        self.session = URLSession(configuration: config)
         
         self.downloadDirectory = try fileManager.url(
             for: .documentDirectory,
@@ -136,6 +143,65 @@ public actor YouTubeKitExtractor {
         )
     }
     
+    /// Start a background download for a YouTube video
+    /// This allows downloads to continue when the app is backgrounded
+    public func startBackgroundDownload(
+        videoID: String,
+        quality: Quality = .high,
+        progressHandler: ((Double) -> Void)? = nil,
+        completion: @escaping (Result<DownloadResult, Error>) -> Void
+    ) async {
+        do {
+            // Get stream URL first (requires foreground)
+            let youtube = YouTube(videoID: videoID)
+            let streams = try await youtube.streams
+            let metadata = try await youtube.metadata
+            
+            let audioStreams = streams.filterAudioOnly()
+            guard let audioStream = selectBestAudioStream(from: audioStreams, quality: quality) else {
+                completion(.failure(YouTubeKitError.noAudioStream))
+                return
+            }
+            
+            let title = metadata?.title ?? "Unknown Track"
+            let artist = "Unknown Artist"
+            let album = "YouTube Downloads"
+            let sanitizedTitle = sanitizeFilename(title)
+            let fileExtension = audioStream.fileExtension.rawValue
+            let filename = "\(artist)/\(album)/\(sanitizedTitle).\(fileExtension)"
+            
+            // Start background download
+            BackgroundDownloadManager.shared.startDownload(
+                from: audioStream.url,
+                filename: filename,
+                progressHandler: progressHandler
+            ) { result in
+                switch result {
+                case .success(let localURL):
+                    Task {
+                        let duration = await self.getAudioDuration(url: localURL)
+                        let downloadResult = DownloadResult(
+                            localURL: localURL,
+                            title: title,
+                            duration: duration,
+                            author: artist,
+                            album: album,
+                            thumbnailURL: metadata?.thumbnail?.url
+                        )
+                        completion(.success(downloadResult))
+                    }
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
+            
+            Logger.info("Started background download for: \(title)", category: .youtube)
+        } catch {
+            Logger.error("Failed to start background download", error: error, category: .youtube)
+            completion(.failure(error))
+        }
+    }
+    
     /// Extract video ID from various YouTube URL formats
     public func extractVideoID(from urlString: String) -> String? {
         guard let url = URL(string: urlString) else { return nil }
@@ -173,41 +239,82 @@ public actor YouTubeKitExtractor {
     /// Extract video IDs from a YouTube playlist URL
     /// Uses YouTube's playlist page to get video IDs
     public func extractPlaylistVideoIDs(from urlString: String) async -> [String] {
+        Logger.info("Extracting playlist video IDs from: \(urlString)", category: .youtube)
+        
         guard let url = URL(string: urlString),
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let listID = components.queryItems?.first(where: { $0.name == "list" })?.value else {
+            Logger.warning("Could not parse playlist ID from URL: \(urlString)", category: .youtube)
             return []
         }
         
-        // Fetch playlist page and extract video IDs
+        Logger.debug("Playlist ID: \(listID)", category: .youtube)
+        
+        // Fetch playlist page with proper headers
         let playlistURL = "https://www.youtube.com/playlist?list=\(listID)"
         
         guard let pageURL = URL(string: playlistURL) else { return [] }
         
+        var request = URLRequest(url: pageURL)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        
         do {
-            let (data, _) = try await session.data(from: pageURL)
-            guard let html = String(data: data, encoding: .utf8) else { return [] }
+            let (data, response) = try await session.data(for: request)
             
-            // Extract video IDs from playlist page
+            if let httpResponse = response as? HTTPURLResponse {
+                Logger.debug("Playlist page response: \(httpResponse.statusCode)", category: .youtube)
+            }
+            
+            guard let html = String(data: data, encoding: .utf8) else {
+                Logger.error("Could not decode playlist page as UTF-8", category: .youtube)
+                return []
+            }
+            
+            Logger.debug("Received HTML: \(html.count) characters", category: .youtube)
+            
+            // Extract video IDs using multiple patterns
             var videoIDs: [String] = []
-            let pattern = #"\"videoId\":\"([a-zA-Z0-9_-]{11})\""#
             
-            if let regex = try? NSRegularExpression(pattern: pattern) {
-                let range = NSRange(html.startIndex..., in: html)
-                let matches = regex.matches(in: html, range: range)
-                
-                for match in matches {
-                    if let idRange = Range(match.range(at: 1), in: html) {
-                        let videoID = String(html[idRange])
-                        if !videoIDs.contains(videoID) {
-                            videoIDs.append(videoID)
+            // Pattern 1: videoId in JSON
+            let patterns = [
+                #"\"videoId\":\"([a-zA-Z0-9_-]{11})\""#,
+                #"watch\?v=([a-zA-Z0-9_-]{11})"#,
+                #"/watch\?v=([a-zA-Z0-9_-]{11})"#,
+                #"\"url\":\"/watch\?v=([a-zA-Z0-9_-]{11})"#
+            ]
+            
+            for pattern in patterns {
+                if let regex = try? NSRegularExpression(pattern: pattern) {
+                    let range = NSRange(html.startIndex..., in: html)
+                    let matches = regex.matches(in: html, range: range)
+                    
+                    for match in matches {
+                        if let idRange = Range(match.range(at: 1), in: html) {
+                            let videoID = String(html[idRange])
+                            if !videoIDs.contains(videoID) {
+                                videoIDs.append(videoID)
+                            }
                         }
                     }
                 }
+                
+                // Stop if we found videos with this pattern
+                if !videoIDs.isEmpty {
+                    Logger.debug("Found \(videoIDs.count) videos using pattern: \(pattern)", category: .youtube)
+                    break
+                }
+            }
+            
+            if videoIDs.isEmpty {
+                Logger.warning("No video IDs found in playlist page. HTML preview: \(String(html.prefix(1000)))", category: .youtube)
+            } else {
+                Logger.success("Extracted \(videoIDs.count) video IDs from playlist", category: .youtube)
             }
             
             return videoIDs
         } catch {
+            Logger.error("Failed to fetch playlist page", error: error, category: .youtube)
             return []
         }
     }
@@ -265,27 +372,49 @@ public actor YouTubeKitExtractor {
     ) async throws -> URL {
         var lastError: Error = YouTubeKitError.downloadFailed
         
+        Logger.info("Starting download from: \(url.absoluteString.prefix(100))...", category: .youtube)
+        let startTime = Date()
+        
         for attempt in 0..<maxRetries {
             do {
                 // Update progress based on attempt
                 let baseProgress = 0.25 + (Double(attempt) * 0.1)
                 progressHandler?(min(baseProgress, 0.85))
                 
+                if attempt > 0 {
+                    Logger.debug("Download retry attempt \(attempt + 1)/\(maxRetries)", category: .youtube)
+                }
+                
                 let (tempURL, response) = try await session.download(from: url)
                 
                 guard let httpResponse = response as? HTTPURLResponse,
                       (200...299).contains(httpResponse.statusCode) else {
+                    Logger.warning("Download failed with non-2xx status", category: .youtube)
                     throw YouTubeKitError.downloadFailed
+                }
+                
+                let elapsed = Date().timeIntervalSince(startTime)
+                
+                // Get file size for logging
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+                   let fileSize = attrs[.size] as? Int64 {
+                    let sizeMB = Double(fileSize) / 1_000_000
+                    let speedMBps = sizeMB / elapsed
+                    Logger.success("Download complete: \(String(format: "%.1f", sizeMB))MB in \(String(format: "%.1f", elapsed))s (\(String(format: "%.2f", speedMBps)) MB/s)", category: .youtube)
+                } else {
+                    Logger.success("Download complete in \(String(format: "%.1f", elapsed))s", category: .youtube)
                 }
                 
                 return tempURL
             } catch let error as URLError where isRetryableError(error) {
                 lastError = error
+                Logger.warning("Retryable error: \(error.localizedDescription)", category: .youtube)
                 // Exponential backoff: 1s, 2s, 4s
                 let delay = pow(2.0, Double(attempt))
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 continue
             } catch {
+                Logger.error("Download failed", error: error, category: .youtube)
                 throw error
             }
         }

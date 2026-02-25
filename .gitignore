@@ -1,1 +1,44 @@
-.build
+# Swift/Xcode
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/
+xcuserdata/
+*.playground/timeline.xctimeline
+*.playground/playground.xcworkspace
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE
+*.swp
+*.swo
+*~
+.idea/
+*.iml
+
+# Dependencies
+Packages/
+Package.resolved
+
+# Test coverage
+*.profraw
+*.profdata
+codecov/
+
+# Misc
+*.log
+Thumbs.db

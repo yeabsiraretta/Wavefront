@@ -81,26 +81,85 @@ public struct MainTabView: View {
 
 // MARK: - Media Tab (Combined Songs & Albums)
 
-/// Combined media tab with Songs and Albums selection
+/**
+ * Combined media tab providing access to both Songs and Albums.
+ *
+ * This view replaces the separate Songs and Albums tabs with a unified
+ * interface using a segmented picker for selection. Users can switch
+ * between viewing their songs list or albums collection.
+ *
+ * ## Features
+ * - Segmented picker to toggle between Songs and Albums views
+ * - Search functionality across title, artist, and album
+ * - YouTube and Spotify import capabilities
+ * - Track management with context menus and swipe actions
+ * - Now playing bar with playback controls
+ *
+ * ## Properties
+ * @property viewModel - The shared MusicLibraryViewModel for state management
+ * @property selectedMediaType - Currently selected view type (songs or albums)
+ */
 struct MediaTab: View {
+    /// ViewModel managing library state and playback
     @ObservedObject var viewModel: MusicLibraryViewModel
+    
+    /// UserLibrary for observing liked songs changes
+    @ObservedObject var userLibrary = UserLibrary.shared
+    
+    /// Currently selected media type (songs or albums)
     @State private var selectedMediaType: MediaType = .songs
+    
+    /// Controls YouTube import sheet visibility
     @State private var showingYouTubeSheet = false
+    
+    /// Controls Spotify import sheet visibility
     @State private var showingSpotifySheet = false
+    
+    /// Controls music thoughts sheet visibility
     @State private var showingThoughtsSheet = false
+    
+    /// Controls album art sheet visibility
     @State private var showingAlbumArtSheet = false
+    
+    /// Track selected for album art editing
     @State private var selectedTrackForArt: AudioTrack?
+    
+    /// Track selected for writing thoughts
     @State private var selectedTrackForThoughts: AudioTrack?
+    
+    /// Controls shared play sheet visibility
     @State private var showingSharedPlaySheet = false
+    
+    /// Controls track notes sheet visibility
     @State private var showingTrackNotesSheet = false
+    
+    /// Track selected for viewing notes
     @State private var selectedTrackForNotes: AudioTrack?
+    
+    /// Track selected for renaming
+    @State private var selectedTrackForRename: AudioTrack?
+    
+    /// Controls rename sheet visibility
+    @State private var showingRenameSheet = false
+    
+    /// URL input for YouTube import
     @State private var youtubeURL = ""
+    
+    /// URL input for Spotify import
     @State private var spotifyURL = ""
+    
+    /// Search text for filtering tracks
     @State private var searchText = ""
     
+    /**
+     * Enumeration of media types available in the tab.
+     *
+     * @case songs - Display individual tracks list
+     * @case artists - Display tracks grouped by artist
+     */
     enum MediaType: String, CaseIterable {
         case songs = "Songs"
-        case albums = "Albums"
+        case artists = "Artists"
     }
     
     var filteredTracks: [AudioTrack] {
@@ -114,8 +173,8 @@ struct MediaTab: View {
         }
     }
     
-    var albums: [Album] {
-        Album.groupTracks(viewModel.tracks)
+    var artists: [Artist] {
+        Artist.groupTracks(viewModel.tracks)
     }
     
     var body: some View {
@@ -135,8 +194,8 @@ struct MediaTab: View {
                     switch selectedMediaType {
                     case .songs:
                         songsContent
-                    case .albums:
-                        albumsContent
+                    case .artists:
+                        artistsContent
                     }
                 }
             }
@@ -254,21 +313,17 @@ struct MediaTab: View {
                 }
             )
         }
-        .sheet(isPresented: $showingAlbumArtSheet) {
-            if let track = selectedTrackForArt {
-                AlbumArtSheet(
-                    track: track,
-                    onSave: { imageData in
-                        viewModel.setAlbumArt(for: track, imageData: imageData)
-                        showingAlbumArtSheet = false
-                        selectedTrackForArt = nil
-                    },
-                    onCancel: {
-                        showingAlbumArtSheet = false
-                        selectedTrackForArt = nil
-                    }
-                )
-            }
+        .sheet(item: $selectedTrackForArt) { track in
+            AlbumArtSheet(
+                track: track,
+                onSave: { imageData in
+                    viewModel.setAlbumArt(for: track, imageData: imageData)
+                    selectedTrackForArt = nil
+                },
+                onCancel: {
+                    selectedTrackForArt = nil
+                }
+            )
         }
         .sheet(isPresented: $showingSharedPlaySheet) {
             SharedPlayView(viewModel: viewModel)
@@ -281,6 +336,22 @@ struct MediaTab: View {
                     onDismiss: {
                         showingTrackNotesSheet = false
                         selectedTrackForNotes = nil
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $showingRenameSheet) {
+            if let track = selectedTrackForRename {
+                RenameTrackSheet(
+                    track: track,
+                    onSave: { newTitle, newArtist in
+                        viewModel.renameTrack(track, newTitle: newTitle, newArtist: newArtist)
+                        showingRenameSheet = false
+                        selectedTrackForRename = nil
+                    },
+                    onCancel: {
+                        showingRenameSheet = false
+                        selectedTrackForRename = nil
                     }
                 )
             }
@@ -309,8 +380,8 @@ struct MediaTab: View {
                 TrackRow(
                     track: track,
                     isPlaying: viewModel.currentTrack?.id == track.id,
-                    isLiked: UserLibrary.shared.isLiked(track),
-                    onLike: { UserLibrary.shared.toggleLike(track) },
+                    isLiked: userLibrary.isLiked(track),
+                    onLike: { userLibrary.toggleLike(track) },
                     onDelete: { viewModel.deleteTrack(track) }
                 )
                 .contentShape(Rectangle())
@@ -351,17 +422,23 @@ struct MediaTab: View {
                     
                     Button {
                         selectedTrackForArt = track
-                        showingAlbumArtSheet = true
                     } label: {
                         Label("Set Album Art", systemImage: "photo")
                     }
                     
                     Button {
-                        UserLibrary.shared.toggleLike(track)
+                        selectedTrackForRename = track
+                        showingRenameSheet = true
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    
+                    Button {
+                        userLibrary.toggleLike(track)
                     } label: {
                         Label(
-                            UserLibrary.shared.isLiked(track) ? "Unlike" : "Like",
-                            systemImage: UserLibrary.shared.isLiked(track) ? "heart.slash" : "heart"
+                            userLibrary.isLiked(track) ? "Unlike" : "Like",
+                            systemImage: userLibrary.isLiked(track) ? "heart.slash" : "heart"
                         )
                     }
                     
@@ -402,23 +479,23 @@ struct MediaTab: View {
         }
     }
     
-    // MARK: - Albums Content
+    // MARK: - Artists Content
     
     @ViewBuilder
-    private var albumsContent: some View {
+    private var artistsContent: some View {
         if viewModel.isLoading {
             ProgressView("Loading...")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if albums.isEmpty {
+        } else if artists.isEmpty {
             EmptyStateView(
-                title: "No Albums",
-                systemImage: "square.stack",
-                description: "Import music to see albums here."
+                title: "No Artists",
+                systemImage: "person.2",
+                description: "Import music to see artists here."
             )
         } else {
-            List(albums) { album in
-                NavigationLink(destination: AlbumDetailView(album: album, viewModel: viewModel)) {
-                    AlbumRow(album: album)
+            List(artists) { artist in
+                NavigationLink(destination: ArtistDetailView(artist: artist, viewModel: viewModel)) {
+                    ArtistRow(artist: artist)
                 }
             }
             .listStyle(.plain)
@@ -430,6 +507,7 @@ struct MediaTab: View {
 
 struct SongsTab: View {
     @ObservedObject var viewModel: MusicLibraryViewModel
+    @ObservedObject var userLibrary = UserLibrary.shared
     @State private var showingYouTubeSheet = false
     @State private var showingSpotifySheet = false
     @State private var showingThoughtsSheet = false
@@ -467,8 +545,8 @@ struct SongsTab: View {
                         TrackRow(
                             track: track,
                             isPlaying: viewModel.currentTrack?.id == track.id,
-                            isLiked: UserLibrary.shared.isLiked(track),
-                            onLike: { UserLibrary.shared.toggleLike(track) },
+                            isLiked: userLibrary.isLiked(track),
+                            onLike: { userLibrary.toggleLike(track) },
                             onDelete: { viewModel.deleteTrack(track) }
                         )
                         .contentShape(Rectangle())
@@ -520,11 +598,11 @@ struct SongsTab: View {
                             }
                             
                             Button {
-                                UserLibrary.shared.toggleLike(track)
+                                userLibrary.toggleLike(track)
                             } label: {
                                 Label(
-                                    UserLibrary.shared.isLiked(track) ? "Unlike" : "Like",
-                                    systemImage: UserLibrary.shared.isLiked(track) ? "heart.slash" : "heart"
+                                    userLibrary.isLiked(track) ? "Unlike" : "Like",
+                                    systemImage: userLibrary.isLiked(track) ? "heart.slash" : "heart"
                                 )
                             }
                             
@@ -685,21 +763,17 @@ struct SongsTab: View {
                 }
             )
         }
-        .sheet(isPresented: $showingAlbumArtSheet) {
-            if let track = selectedTrackForArt {
-                AlbumArtSheet(
-                    track: track,
-                    onSave: { imageData in
-                        viewModel.setAlbumArt(for: track, imageData: imageData)
-                        showingAlbumArtSheet = false
-                        selectedTrackForArt = nil
-                    },
-                    onCancel: {
-                        showingAlbumArtSheet = false
-                        selectedTrackForArt = nil
-                    }
-                )
-            }
+        .sheet(item: $selectedTrackForArt) { track in
+            AlbumArtSheet(
+                track: track,
+                onSave: { imageData in
+                    viewModel.setAlbumArt(for: track, imageData: imageData)
+                    selectedTrackForArt = nil
+                },
+                onCancel: {
+                    selectedTrackForArt = nil
+                }
+            )
         }
         .sheet(isPresented: $showingSharedPlaySheet) {
             SharedPlayView(viewModel: viewModel)
@@ -809,14 +883,15 @@ struct AlbumRow: View {
 struct AlbumDetailView: View {
     let album: Album
     @ObservedObject var viewModel: MusicLibraryViewModel
+    @ObservedObject var userLibrary = UserLibrary.shared
     
     var body: some View {
         List(album.tracks) { track in
             TrackRow(
                 track: track,
                 isPlaying: viewModel.currentTrack?.id == track.id,
-                isLiked: UserLibrary.shared.isLiked(track),
-                onLike: { UserLibrary.shared.toggleLike(track) },
+                isLiked: userLibrary.isLiked(track),
+                onLike: { userLibrary.toggleLike(track) },
                 onDelete: { viewModel.deleteTrack(track) }
             )
             .contentShape(Rectangle())

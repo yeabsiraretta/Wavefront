@@ -215,19 +215,17 @@ struct TrackRow: View {
     let track: AudioTrack
     let isPlaying: Bool
     var isLiked: Bool = false
+    #if os(iOS)
+    var albumArt: UIImage? = nil
+    #endif
     var onLike: (() -> Void)? = nil
     var onDelete: (() -> Void)? = nil
     
     var body: some View {
         HStack(spacing: 12) {
-            // Album art placeholder
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.secondary.opacity(0.2))
+            // Album art
+            albumArtView
                 .frame(width: 50, height: 50)
-                .overlay {
-                    Image(systemName: isPlaying ? "waveform" : "music.note")
-                        .foregroundStyle(isPlaying ? .blue : .secondary)
-                }
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(track.title)
@@ -295,6 +293,29 @@ struct TrackRow: View {
         let mins = Int(seconds) / 60
         let secs = Int(seconds) % 60
         return String(format: "%d:%02d", mins, secs)
+    }
+    
+    @ViewBuilder
+    private var albumArtView: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.2))
+            
+            #if os(iOS)
+            if let albumArt = albumArt {
+                Image(uiImage: albumArt)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                Image(systemName: isPlaying ? "waveform" : "music.note")
+                    .foregroundStyle(isPlaying ? .blue : .secondary)
+            }
+            #else
+            Image(systemName: isPlaying ? "waveform" : "music.note")
+                .foregroundStyle(isPlaying ? .blue : .secondary)
+            #endif
+        }
     }
 }
 
@@ -559,13 +580,42 @@ private struct MainPlayerPage: View {
     }
 }
 
-/// Waveform visualization page
+/**
+ * Waveform visualization page with 10-second sliding window.
+ *
+ * Displays a procedurally generated waveform visualization that shows
+ * a 10-second window centered on the current playback position. The
+ * waveform scrolls as playback progresses.
+ *
+ * ## Features
+ * - 10-second sliding window visualization
+ * - Current position indicator (white bar)
+ * - Played/unplayed bar coloring
+ * - Large time display
+ * - Overall progress bar showing position in full song
+ *
+ * ## Properties
+ * @property track - The audio track being visualized
+ * @property currentTime - Current playback position in seconds
+ * @property isPlaying - Whether audio is currently playing
+ */
 private struct WaveformPage: View {
+    /// The audio track being visualized
     let track: AudioTrack
+    
+    /// Current playback position in seconds
     let currentTime: TimeInterval
+    
+    /// Whether audio is currently playing
     let isPlaying: Bool
     
-    @State private var waveformBars: [CGFloat] = []
+    /// Window size in seconds (10 seconds)
+    private let windowDuration: TimeInterval = 10.0
+    
+    /// Number of bars to display in the window
+    private let displayBarCount = 60
+    
+    @State private var allWaveformBars: [CGFloat] = []
     
     var body: some View {
         VStack(spacing: 24) {
@@ -581,67 +631,128 @@ private struct WaveformPage: View {
                     .foregroundStyle(.secondary)
             }
             
-            // Waveform visualization
-            GeometryReader { geometry in
-                HStack(alignment: .center, spacing: 2) {
-                    ForEach(0..<waveformBars.count, id: \.self) { index in
-                        WaveformBar(
-                            height: waveformBars[index],
-                            isPlayed: isBarPlayed(index: index),
-                            isPlaying: isPlaying
-                        )
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: 200)
-                .onAppear {
-                    generateWaveform(width: geometry.size.width)
+            // Current time prominently displayed
+            Text(formatTime(currentTime))
+                .font(.system(size: 48, weight: .light, design: .monospaced))
+                .foregroundStyle(.primary)
+            
+            // Waveform visualization - sliding window
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(0..<displayBarCount, id: \.self) { index in
+                    let barData = getBarData(displayIndex: index)
+                    WaveformBar(
+                        height: barData.height,
+                        isPlayed: barData.isPlayed,
+                        isCurrent: barData.isCurrent,
+                        isPlaying: isPlaying
+                    )
                 }
             }
-            .frame(height: 200)
+            .frame(maxWidth: .infinity, maxHeight: 200)
             .padding(.horizontal, 24)
+            .onAppear {
+                generateFullWaveform()
+            }
             
-            // Time display
+            // Window time range display
             HStack {
-                Text(formatTime(currentTime))
+                Text(formatTime(windowStartTime))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 
                 Spacer()
                 
-                Text(formatTime(track.duration ?? 0))
+                Text("10s window")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                
+                Spacer()
+                
+                Text(formatTime(windowEndTime))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 32)
             
-            Text("Waveform")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
+            // Progress in song
+            VStack(spacing: 4) {
+                ProgressView(value: progressValue, total: 1.0)
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .frame(height: 4)
+                
+                Text("\(formatTime(currentTime)) / \(formatTime(track.duration ?? 0))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 32)
             
             Spacer()
         }
         .padding()
     }
     
-    private func generateWaveform(width: CGFloat) {
-        let barCount = Int(width / 6)
+    /// Start time of the current window
+    private var windowStartTime: TimeInterval {
+        let halfWindow = windowDuration / 2
+        let centered = currentTime - halfWindow
+        return max(0, min(centered, (track.duration ?? 0) - windowDuration))
+    }
+    
+    /// End time of the current window
+    private var windowEndTime: TimeInterval {
+        return min(windowStartTime + windowDuration, track.duration ?? 0)
+    }
+    
+    /// Overall progress in the song
+    private var progressValue: Double {
+        guard let duration = track.duration, duration > 0 else { return 0 }
+        return min(currentTime / duration, 1.0)
+    }
+    
+    /// Generate waveform data for the entire song
+    private func generateFullWaveform() {
+        guard let duration = track.duration, duration > 0 else {
+            allWaveformBars = Array(repeating: 0.5, count: 100)
+            return
+        }
+        
+        // Generate more bars for longer songs (roughly 6 bars per second)
+        let totalBars = Int(duration * 6)
         let seed = track.title.hashValue
         var bars: [CGFloat] = []
         
-        for i in 0..<barCount {
+        for i in 0..<totalBars {
             let random = abs((seed + i * 31) % 100)
             let height = CGFloat(30 + random % 70) / 100.0
             bars.append(height)
         }
         
-        waveformBars = bars
+        allWaveformBars = bars
     }
     
-    private func isBarPlayed(index: Int) -> Bool {
-        guard let duration = track.duration, duration > 0 else { return false }
-        let progress = currentTime / duration
-        let barProgress = Double(index) / Double(waveformBars.count)
-        return barProgress <= progress
+    /// Get bar data for a display position in the sliding window
+    private func getBarData(displayIndex: Int) -> (height: CGFloat, isPlayed: Bool, isCurrent: Bool) {
+        guard let duration = track.duration, duration > 0, !allWaveformBars.isEmpty else {
+            return (0.5, false, false)
+        }
+        
+        // Calculate what time this bar represents
+        let barTimeInWindow = (Double(displayIndex) / Double(displayBarCount)) * windowDuration
+        let barTime = windowStartTime + barTimeInWindow
+        
+        // Map to the full waveform array
+        let barIndex = Int((barTime / duration) * Double(allWaveformBars.count))
+        let safeIndex = min(max(0, barIndex), allWaveformBars.count - 1)
+        
+        let height = allWaveformBars[safeIndex]
+        let isPlayed = barTime <= currentTime
+        
+        // Mark the bar closest to current time
+        let currentBarIndex = Int(((currentTime - windowStartTime) / windowDuration) * Double(displayBarCount))
+        let isCurrent = displayIndex == currentBarIndex
+        
+        return (height, isPlayed, isCurrent)
     }
     
     private func formatTime(_ time: TimeInterval) -> String {
@@ -651,22 +762,71 @@ private struct WaveformPage: View {
     }
 }
 
-/// Individual waveform bar
+/**
+ * Individual waveform bar component.
+ *
+ * Renders a single vertical bar in the waveform visualization with
+ * color coding based on playback state.
+ *
+ * ## Color Coding
+ * - White: Current playback position
+ * - Accent color: Already played portion
+ * - Gray (30% opacity): Not yet played
+ *
+ * ## Properties
+ * @property height - Normalized height (0.0 to 1.0)
+ * @property isPlayed - Whether this bar has been played
+ * @property isCurrent - Whether this is the current position bar
+ * @property isPlaying - Whether audio is currently playing
+ */
 private struct WaveformBar: View {
+    /// Normalized height of the bar (0.0 to 1.0)
     let height: CGFloat
+    
+    /// Whether this portion has been played
     let isPlayed: Bool
+    
+    /// Whether this is the current playback position
+    let isCurrent: Bool
+    
+    /// Whether audio is currently playing
     let isPlaying: Bool
     
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
-            .fill(isPlayed ? Color.accentColor : Color.secondary.opacity(0.3))
+            .fill(barColor)
             .frame(width: 4, height: 200 * height)
             .animation(.easeInOut(duration: 0.1), value: isPlayed)
     }
+    
+    /// Determines bar color based on playback state
+    private var barColor: Color {
+        if isCurrent {
+            return .white
+        } else if isPlayed {
+            return .accentColor
+        } else {
+            return .secondary.opacity(0.3)
+        }
+    }
 }
 
-/// Lyrics page with placeholder
+/**
+ * Lyrics display page with placeholder for missing lyrics.
+ *
+ * Shows the track's lyrics if available, or displays a centered
+ * "No lyrics." placeholder message when lyrics are not present.
+ *
+ * ## Features
+ * - Scrollable lyrics display when available
+ * - Centered placeholder for missing lyrics
+ * - Track info header with title and artist
+ *
+ * ## Properties
+ * @property track - The audio track whose lyrics to display
+ */
 private struct LyricsPage: View {
+    /// The audio track whose lyrics to display
     let track: AudioTrack
     
     var body: some View {
@@ -721,6 +881,9 @@ private struct LyricsPage: View {
 struct AlbumArtworkView: View {
     let track: AudioTrack
     let size: CGFloat
+    #if os(iOS)
+    @State private var artworkImage: UIImage?
+    #endif
     
     var body: some View {
         ZStack {
@@ -733,13 +896,47 @@ struct AlbumArtworkView: View {
                     )
                 )
             
+            #if os(iOS)
+            if let image = artworkImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "music.note")
+                    .font(.system(size: size * 0.3))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            #else
             Image(systemName: "music.note")
                 .font(.system(size: size * 0.3))
                 .foregroundStyle(.white.opacity(0.8))
+            #endif
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.1))
+        #if os(iOS)
+        .onAppear {
+            loadArtwork()
+        }
+        .onChange(of: track.id) { _ in
+            loadArtwork()
+        }
+        #endif
     }
+    
+    #if os(iOS)
+    private func loadArtwork() {
+        // Load from saved artwork path
+        if let path = UserDefaults.standard.string(forKey: "artwork_\(track.id.uuidString)"),
+           FileManager.default.fileExists(atPath: path),
+           let data = FileManager.default.contents(atPath: path),
+           let image = UIImage(data: data) {
+            artworkImage = image
+        } else {
+            artworkImage = nil
+        }
+    }
+    #endif
     
     private var gradientColors: [Color] {
         // Generate consistent colors based on track title
@@ -1000,14 +1197,39 @@ struct MusicThoughtsSheet: View {
 
 // MARK: - Track Notes Sheet
 
-/// Sheet for viewing all notes/thoughts for a specific track
+/**
+ * Sheet for viewing all notes/thoughts for a specific track.
+ *
+ * Displays a list of user notes associated with a track in reverse
+ * chronological order (newest first). Each note is expandable to show
+ * full content and relative time.
+ *
+ * ## Features
+ * - Reverse chronological ordering (newest first)
+ * - Tap-to-expand note rows
+ * - 2-line preview when collapsed, full content when expanded
+ * - Relative time display ("2 days ago") when expanded
+ * - Empty state with instructions for adding notes
+ *
+ * ## Properties
+ * @property track - The track whose notes to display
+ * @property thoughts - Array of MusicThought objects for this track
+ * @property onDismiss - Callback when sheet is dismissed
+ */
 struct TrackNotesSheet: View {
+    /// The track whose notes to display
     let track: AudioTrack
+    
+    /// Array of thoughts/notes for this track
     let thoughts: [MusicThought]
+    
+    /// Callback when the sheet is dismissed
     let onDismiss: () -> Void
     
+    /// ID of the currently expanded note (nil if none expanded)
     @State private var expandedNoteId: UUID?
     
+    /// Date formatter for displaying note timestamps
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
@@ -1076,11 +1298,30 @@ struct TrackNotesSheet: View {
     }
 }
 
-/// Individual note row with tap-to-expand functionality
+/**
+ * Individual note row with tap-to-expand functionality.
+ *
+ * Displays a single note with date header, content preview, and
+ * expansion indicator. Tapping toggles between collapsed (2-line
+ * preview) and expanded (full content with relative time) states.
+ *
+ * ## Properties
+ * @property thought - The MusicThought to display
+ * @property isExpanded - Whether the row is currently expanded
+ * @property dateFormatter - Formatter for displaying the note date
+ * @property onTap - Callback when the row is tapped
+ */
 private struct NoteRow: View {
+    /// The thought/note to display
     let thought: MusicThought
+    
+    /// Whether this row is currently expanded
     let isExpanded: Bool
+    
+    /// Formatter for displaying dates
     let dateFormatter: DateFormatter
+    
+    /// Callback when row is tapped
     let onTap: () -> Void
     
     var body: some View {
@@ -1134,73 +1375,98 @@ private struct NoteRow: View {
 // MARK: - Album Art Sheet
 
 #if os(iOS)
-/// Sheet for setting album art via camera or search
+/**
+ * Sheet for setting album art via multiple methods.
+ *
+ * Provides a comprehensive interface for selecting or capturing album artwork
+ * with four input methods: Photo Library, Camera, iTunes Search, and URL input.
+ *
+ * ## Features
+ * - Photo library picker for selecting existing images
+ * - Camera capture for taking new photos
+ * - iTunes API search for finding official album covers
+ * - URL input for pasting image links
+ * - Image preview with selection indicator
+ * - High-quality image compression for storage
+ *
+ * ## Properties
+ * @property track - The track to set album art for
+ * @property onSave - Callback with image data when saved
+ * @property onCancel - Callback when cancelled
+ */
 struct AlbumArtSheet: View {
     let track: AudioTrack
     let onSave: (Data) -> Void
     let onCancel: () -> Void
     
-    @State private var selectedTab = 0
+    /// Source selection tabs
+    enum ArtSource: Int, CaseIterable {
+        case photos = 0
+        case camera = 1
+        case search = 2
+        case url = 3
+        
+        var title: String {
+            switch self {
+            case .photos: return "Photos"
+            case .camera: return "Camera"
+            case .search: return "Search"
+            case .url: return "URL"
+            }
+        }
+        
+        var icon: String {
+            switch self {
+            case .photos: return "photo.on.rectangle"
+            case .camera: return "camera"
+            case .search: return "magnifyingglass"
+            case .url: return "link"
+            }
+        }
+    }
+    
+    @State private var selectedSource: ArtSource = .search
     @State private var searchQuery = ""
     @State private var searchResults: [CoverSearchResult] = []
     @State private var isSearching = false
-    @State private var showingCamera = false
-    @State private var capturedImage: UIImage?
+    @State private var showingImagePicker = false
+    @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
+    @State private var selectedImage: UIImage?
+    @State private var imageURL = ""
+    @State private var isLoadingURL = false
+    @State private var urlError: String?
     
     var body: some View {
         NavigationStack {
-            VStack(spacing: 16) {
-                HStack(spacing: 12) {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.secondary.opacity(0.2))
-                        .frame(width: 60, height: 60)
-                        .overlay {
-                            if let image = capturedImage {
-                                Image(uiImage: image)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                            } else {
-                                Image(systemName: "music.note")
-                                    .font(.title2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(track.title)
-                            .font(.headline)
-                            .lineLimit(1)
-                        Text(track.artist ?? "Unknown Artist")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+            VStack(spacing: 0) {
+                // Track info header with preview
+                trackHeader
+                    .padding()
+                    .background(Color(UIColor.secondarySystemBackground))
+                
+                // Source selector
+                sourceSelector
+                    .padding(.vertical, 12)
+                
+                Divider()
+                
+                // Content based on selected source
+                Group {
+                    switch selectedSource {
+                    case .photos:
+                        photosView
+                    case .camera:
+                        cameraView
+                    case .search:
+                        searchView
+                    case .url:
+                        urlView
                     }
-                    
-                    Spacer()
                 }
-                .padding(.horizontal)
-                
-                Picker("Method", selection: $selectedTab) {
-                    Text("Camera").tag(0)
-                    Text("Search").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                
-                if selectedTab == 0 {
-                    cameraView
-                } else {
-                    searchView
-                }
-                
-                Spacer()
+                .frame(maxHeight: .infinity)
             }
-            .padding(.top)
             .navigationTitle("Set Album Art")
-            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", action: onCancel)
@@ -1208,35 +1474,166 @@ struct AlbumArtSheet: View {
                 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        if let image = capturedImage,
-                           let data = image.jpegData(compressionQuality: 0.8) {
-                            onSave(data)
-                        }
+                        saveImage()
                     }
-                    .disabled(capturedImage == nil)
+                    .fontWeight(.semibold)
+                    .disabled(selectedImage == nil)
                 }
             }
-            .sheet(isPresented: $showingCamera) {
-                ImagePicker(image: $capturedImage, sourceType: .camera)
+            .sheet(isPresented: $showingImagePicker) {
+                ImagePicker(image: $selectedImage, sourceType: imagePickerSource)
             }
         }
         .presentationDetents([.large])
         .onAppear {
-            searchQuery = "\(track.title) \(track.artist ?? "") album cover"
+            searchQuery = "\(track.artist ?? "") \(track.title)"
         }
     }
     
+    // MARK: - Track Header
+    
+    private var trackHeader: some View {
+        HStack(spacing: 16) {
+            // Current/Selected art preview
+            ZStack {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.secondary.opacity(0.15))
+                    .frame(width: 80, height: 80)
+                
+                if let image = selectedImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: 80, height: 80)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(Color.accentColor, lineWidth: 3)
+                        )
+                } else {
+                    Image(systemName: "music.note")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text(track.title)
+                    .font(.headline)
+                    .lineLimit(2)
+                
+                Text(track.artist ?? "Unknown Artist")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                
+                if let album = track.album {
+                    Text(album)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            
+            Spacer()
+            
+            if selectedImage != nil {
+                VStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.green)
+                    Text("Selected")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Source Selector
+    
+    private var sourceSelector: some View {
+        HStack(spacing: 8) {
+            ForEach(ArtSource.allCases, id: \.rawValue) { source in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        selectedSource = source
+                    }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: source.icon)
+                            .font(.system(size: 18))
+                        Text(source.title)
+                            .font(.caption2)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(selectedSource == source ? Color.accentColor : Color.clear)
+                    )
+                    .foregroundStyle(selectedSource == source ? .white : .primary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal)
+    }
+    
+    // MARK: - Photos View
+    
+    private var photosView: some View {
+        VStack(spacing: 24) {
+            Spacer()
+            
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 60))
+                .foregroundStyle(.secondary)
+            
+            VStack(spacing: 8) {
+                Text("Choose from Photo Library")
+                    .font(.headline)
+                
+                Text("Select an existing photo to use as album artwork")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 32)
+            
+            Button {
+                imagePickerSource = .photoLibrary
+                showingImagePicker = true
+            } label: {
+                Label("Choose Photo", systemImage: "photo.on.rectangle")
+                    .fontWeight(.semibold)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .padding(.horizontal, 48)
+            
+            Spacer()
+        }
+    }
+    
+    // MARK: - Camera View
+    
     private var cameraView: some View {
-        VStack(spacing: 20) {
-            if let image = capturedImage {
+        VStack(spacing: 24) {
+            Spacer()
+            
+            if let image = selectedImage, imagePickerSource == .camera {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(maxHeight: 250)
+                    .frame(maxHeight: 200)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .shadow(radius: 4)
                 
                 Button {
-                    showingCamera = true
+                    imagePickerSource = .camera
+                    showingImagePicker = true
                 } label: {
                     Label("Retake Photo", systemImage: "camera")
                 }
@@ -1246,109 +1643,175 @@ struct AlbumArtSheet: View {
                     .font(.system(size: 60))
                     .foregroundStyle(.secondary)
                 
-                Text("Take a photo to use as album art")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                VStack(spacing: 8) {
+                    Text("Take a Photo")
+                        .font(.headline)
+                    
+                    Text("Capture album art with your camera")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
                 
                 Button {
-                    showingCamera = true
+                    imagePickerSource = .camera
+                    showingImagePicker = true
                 } label: {
                     Label("Open Camera", systemImage: "camera")
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
                 }
                 .buttonStyle(.borderedProminent)
-                .padding(.horizontal)
+                .padding(.horizontal, 48)
             }
+            
+            Spacer()
         }
-        .padding()
     }
+    
+    // MARK: - Search View
     
     private var searchView: some View {
         VStack(spacing: 12) {
-            HStack {
-                TextField("Search for album covers...", text: $searchQuery)
-                    .textFieldStyle(.roundedBorder)
+            // Search bar
+            HStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search iTunes for covers...", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .submitLabel(.search)
+                        .onSubmit {
+                            Task { await searchCovers() }
+                        }
+                }
+                .padding(10)
+                .background(Color(UIColor.tertiarySystemFill))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 
                 Button {
-                    Task {
-                        await searchCovers()
-                    }
+                    Task { await searchCovers() }
                 } label: {
-                    Image(systemName: "magnifyingglass")
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.title2)
                 }
-                .buttonStyle(.bordered)
                 .disabled(searchQuery.isEmpty || isSearching)
             }
             .padding(.horizontal)
             
+            // Results
             if isSearching {
-                ProgressView("Searching...")
-                    .padding()
+                Spacer()
+                ProgressView("Searching iTunes...")
+                Spacer()
             } else if searchResults.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "photo.on.rectangle.angled")
+                Spacer()
+                VStack(spacing: 12) {
+                    Image(systemName: "music.note.list")
                         .font(.system(size: 40))
                         .foregroundStyle(.secondary)
-                    Text("Search for album covers")
+                    Text("Search for album artwork")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    Text("Results from iTunes Store")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
-                .padding()
+                Spacer()
             } else {
                 ScrollView {
                     LazyVGrid(columns: [
-                        GridItem(.flexible()),
-                        GridItem(.flexible()),
-                        GridItem(.flexible())
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12),
+                        GridItem(.flexible(), spacing: 12)
                     ], spacing: 12) {
                         ForEach(searchResults) { result in
-                            AsyncImage(url: URL(string: result.thumbnailURL)) { phase in
-                                switch phase {
-                                case .success(let image):
-                                    image
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                        .frame(width: 100, height: 100)
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                        .onTapGesture {
-                                            Task {
-                                                await selectCover(result)
-                                            }
-                                        }
-                                case .failure:
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color.secondary.opacity(0.2))
-                                        .frame(width: 100, height: 100)
-                                        .overlay {
-                                            Image(systemName: "exclamationmark.triangle")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                case .empty:
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color.secondary.opacity(0.2))
-                                        .frame(width: 100, height: 100)
-                                        .overlay {
-                                            ProgressView()
-                                        }
-                                @unknown default:
-                                    EmptyView()
+                            CoverResultCell(
+                                result: result,
+                                isSelected: false,
+                                onSelect: {
+                                    Task { await selectCover(result) }
                                 }
-                            }
+                            )
                         }
                     }
-                    .padding(.horizontal)
+                    .padding()
                 }
             }
         }
     }
+    
+    // MARK: - URL View
+    
+    private var urlView: some View {
+        ScrollView {
+            VStack(spacing: 24) {
+                Spacer(minLength: 40)
+                
+                Image(systemName: "link.circle")
+                    .font(.system(size: 60))
+                    .foregroundStyle(.secondary)
+                
+                VStack(spacing: 8) {
+                    Text("Paste Image URL")
+                        .font(.headline)
+                    
+                    Text("Enter a direct link to an image file")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                
+                VStack(spacing: 12) {
+                    TextField("https://example.com/album-art.jpg", text: $imageURL)
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 32)
+                        .onSubmit {
+                            Task { await loadImageFromURL() }
+                        }
+                
+                if let error = urlError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                
+                Button {
+                    Task { await loadImageFromURL() }
+                } label: {
+                    if isLoadingURL {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    } else {
+                        Label("Load Image", systemImage: "arrow.down.circle")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(imageURL.isEmpty || isLoadingURL)
+                .padding(.horizontal, 48)
+                }
+                
+                Spacer(minLength: 40)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .scrollDismissesKeyboard(.interactively)
+    }
+    
+    // MARK: - Actions
     
     private func searchCovers() async {
         isSearching = true
         defer { isSearching = false }
         
         let encodedQuery = searchQuery.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? searchQuery
-        let searchURL = "https://itunes.apple.com/search?term=\(encodedQuery)&media=music&entity=album&limit=15"
+        let searchURL = "https://itunes.apple.com/search?term=\(encodedQuery)&media=music&entity=album&limit=21"
         
         guard let url = URL(string: searchURL) else { return }
         
@@ -1377,11 +1840,115 @@ struct AlbumArtSheet: View {
             let (data, _) = try await URLSession.shared.data(from: url)
             if let image = UIImage(data: data) {
                 await MainActor.run {
-                    capturedImage = image
+                    selectedImage = image
                 }
             }
         } catch {
             print("Failed to download cover: \(error)")
+        }
+    }
+    
+    private func loadImageFromURL() async {
+        urlError = nil
+        isLoadingURL = true
+        defer { isLoadingURL = false }
+        
+        guard let url = URL(string: imageURL) else {
+            await MainActor.run { urlError = "Invalid URL format" }
+            return
+        }
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                await MainActor.run { urlError = "Failed to load image" }
+                return
+            }
+            
+            guard let image = UIImage(data: data) else {
+                await MainActor.run { urlError = "Invalid image format" }
+                return
+            }
+            
+            await MainActor.run {
+                selectedImage = image
+                urlError = nil
+            }
+        } catch {
+            await MainActor.run { urlError = "Network error: \(error.localizedDescription)" }
+        }
+    }
+    
+    private func saveImage() {
+        guard let image = selectedImage else { return }
+        
+        // Resize if needed and compress
+        let maxSize: CGFloat = 600
+        let resizedImage: UIImage
+        
+        if image.size.width > maxSize || image.size.height > maxSize {
+            let scale = min(maxSize / image.size.width, maxSize / image.size.height)
+            let newSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            
+            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+            resizedImage = UIGraphicsGetImageFromCurrentImageContext() ?? image
+            UIGraphicsEndImageContext()
+        } else {
+            resizedImage = image
+        }
+        
+        if let data = resizedImage.jpegData(compressionQuality: 0.85) {
+            onSave(data)
+        }
+    }
+}
+
+/// Cell for displaying a cover search result
+private struct CoverResultCell: View {
+    let result: CoverSearchResult
+    let isSelected: Bool
+    let onSelect: () -> Void
+    
+    @State private var isLoading = false
+    
+    var body: some View {
+        AsyncImage(url: URL(string: result.thumbnailURL)) { phase in
+            switch phase {
+            case .success(let image):
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 100, height: 100)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
+                    )
+                    .shadow(color: .black.opacity(0.1), radius: 2, y: 1)
+                    .onTapGesture {
+                        onSelect()
+                    }
+            case .failure:
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.secondary.opacity(0.2))
+                    .frame(width: 100, height: 100)
+                    .overlay {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    }
+            case .empty:
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.secondary.opacity(0.2))
+                    .frame(width: 100, height: 100)
+                    .overlay {
+                        ProgressView()
+                    }
+            @unknown default:
+                EmptyView()
+            }
         }
     }
 }

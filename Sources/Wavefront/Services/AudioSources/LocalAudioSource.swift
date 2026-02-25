@@ -175,9 +175,21 @@ public final class LocalAudioSource: AudioSource, @unchecked Sendable {
     private func createTrack(from url: URL, resourceValues: URLResourceValues) async throws -> AudioTrack {
         let metadata = await extractMetadata(from: url)
         
+        var title = metadata.title ?? url.deletingPathExtension().lastPathComponent
+        var artist = metadata.artist
+        
+        // Parse artist from title if not in metadata and title contains " - "
+        if artist == nil || artist?.isEmpty == true {
+            let parsed = parseArtistFromTitle(title)
+            if let parsedArtist = parsed.artist {
+                artist = parsedArtist
+                title = parsed.title
+            }
+        }
+        
         return AudioTrack(
-            title: metadata.title ?? url.deletingPathExtension().lastPathComponent,
-            artist: metadata.artist,
+            title: title,
+            artist: artist,
             album: metadata.album,
             duration: metadata.duration,
             fileURL: url,
@@ -185,6 +197,27 @@ public final class LocalAudioSource: AudioSource, @unchecked Sendable {
             fileSize: resourceValues.fileSize.map { Int64($0) },
             dateAdded: resourceValues.creationDate ?? Date()
         )
+    }
+    
+    /// Parse artist and title from a filename with "Artist - Title" format
+    private func parseArtistFromTitle(_ originalTitle: String) -> (artist: String?, title: String) {
+        // Common separators: " - ", " – ", " — "
+        let separators = [" - ", " – ", " — ", " _ "]
+        
+        for separator in separators {
+            if let range = originalTitle.range(of: separator) {
+                let artist = String(originalTitle[..<range.lowerBound]).trimmingCharacters(in: .whitespaces)
+                let title = String(originalTitle[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                
+                // Only use if both parts are non-empty
+                if !artist.isEmpty && !title.isEmpty {
+                    Logger.debug("Parsed artist '\(artist)' from title '\(originalTitle)'", category: .metadata)
+                    return (artist: artist, title: title)
+                }
+            }
+        }
+        
+        return (artist: nil, title: originalTitle)
     }
     
     private func extractMetadata(from url: URL) async -> AudioMetadata {

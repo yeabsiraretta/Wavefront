@@ -84,7 +84,15 @@ public struct SMBConfiguration: Equatable, Sendable {
         }
         
         let basePath = "/" + pathComponents.dropFirst().joined(separator: "/")
-        let serverURL = URL(string: "smb://\(host)")!
+        
+        // Preserve port if specified
+        let serverURLString: String
+        if let port = url.port {
+            serverURLString = "smb://\(host):\(port)"
+        } else {
+            serverURLString = "smb://\(host)"
+        }
+        let serverURL = URL(string: serverURLString)!
         
         return SMBConfiguration(
             serverURL: serverURL,

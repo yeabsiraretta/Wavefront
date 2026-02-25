@@ -136,8 +136,24 @@ public final class AudioPlayer: NSObject, @unchecked Sendable {
         
         do {
             let url = try await sourceManager.getPlayableURL(for: track)
+            
+            // Validate file exists for local files
+            if url.isFileURL {
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    throw AudioSourceError.trackNotFound(url.lastPathComponent)
+                }
+            }
+            
             await MainActor.run {
                 setupPlayer(with: url)
+                
+                // Verify player item loaded successfully
+                guard let playerItem = player?.currentItem,
+                      playerItem.status != .failed else {
+                    state = .failed("Failed to load audio file")
+                    return
+                }
+                
                 player?.play()
                 state = .playing
                 updateNowPlayingInfo()

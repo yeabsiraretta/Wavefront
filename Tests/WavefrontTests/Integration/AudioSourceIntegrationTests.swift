@@ -94,7 +94,8 @@ final class AudioSourceIntegrationTests: XCTestCase {
         let track = tracks[0]
         let playableURL = try await manager.getPlayableURL(for: track)
         
-        XCTAssertEqual(playableURL, songURL)
+        // Compare standardized paths to handle /private/var vs /var symlink differences
+        XCTAssertEqual(playableURL.standardizedFileURL.path, songURL.standardizedFileURL.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: playableURL.path))
     }
     

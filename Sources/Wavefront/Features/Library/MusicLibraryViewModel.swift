@@ -1,5 +1,8 @@
 import Foundation
 import Combine
+#if os(iOS)
+import UIKit
+#endif
 
 /**
  * ViewModel for managing the music library UI and business logic.
@@ -619,6 +622,67 @@ public final class MusicLibraryViewModel: ObservableObject {
         tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
     
+    /// Import a YouTube video with background download support
+    /// Downloads continue even when app is backgrounded
+    public func importYouTubeVideoBackground(urlString: String) async {
+        guard !urlString.isEmpty else {
+            setError("Please enter a YouTube URL")
+            return
+        }
+        
+        do {
+            let extractor = try YouTubeKitExtractor()
+            guard let videoID = await extractor.extractVideoID(from: urlString) else {
+                setError("Invalid YouTube URL")
+                return
+            }
+            
+            youtubeImportStatus = "Starting background download..."
+            
+            await extractor.startBackgroundDownload(
+                videoID: videoID,
+                quality: .high,
+                progressHandler: { [weak self] progress in
+                    Task { @MainActor in
+                        self?.youtubeDownloadProgress = progress
+                    }
+                }
+            ) { [weak self] result in
+                Task { @MainActor in
+                    switch result {
+                    case .success(let downloadResult):
+                        let track = AudioTrack(
+                            title: downloadResult.title,
+                            artist: downloadResult.author ?? "Unknown Artist",
+                            album: downloadResult.album ?? "YouTube Downloads",
+                            duration: downloadResult.duration,
+                            fileURL: downloadResult.localURL,
+                            sourceType: .local
+                        )
+                        self?.tracks.append(track)
+                        self?.tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+                        self?.youtubeImportStatus = "Download complete!"
+                        Logger.success("Background download complete: \(track.title)", category: .youtube)
+                        
+                    case .failure(let error):
+                        self?.setError("Download failed: \(error.localizedDescription)")
+                        Logger.error("Background download failed", error: error, category: .youtube)
+                    }
+                    
+                    self?.youtubeImportStatus = nil
+                    self?.youtubeDownloadProgress = nil
+                }
+            }
+            
+            // Note: Method returns immediately, download continues in background
+            Logger.info("Background download started for: \(videoID)", category: .youtube)
+            
+        } catch {
+            setError("Failed to start download: \(error.localizedDescription)")
+            youtubeImportStatus = nil
+        }
+    }
+    
     private func importPlaylist(urlString: String, extractor: YouTubeKitExtractor) async throws {
         youtubeImportStatus = "Fetching playlist..."
         
@@ -874,6 +938,7 @@ public final class MusicLibraryViewModel: ObservableObject {
     
     /// Set album art for a track
     public func setAlbumArt(for track: AudioTrack, imageData: Data) {
+        Logger.info("Setting album art for track: \(track.title)", category: .storage)
         let artworkDir = getDocumentsDirectory().appendingPathComponent("Artwork")
         
         do {
@@ -883,9 +948,14 @@ public final class MusicLibraryViewModel: ObservableObject {
             let artworkURL = artworkDir.appendingPathComponent(filename)
             
             try imageData.write(to: artworkURL)
+            Logger.success("Saved album art to: \(artworkURL.path)", category: .storage)
             
             UserDefaults.standard.set(artworkURL.path, forKey: "artwork_\(track.id.uuidString)")
+            
+            // Trigger UI refresh by updating the tracks array
+            objectWillChange.send()
         } catch {
+            Logger.error("Failed to save album art", error: error, category: .storage)
             setError("Failed to save album art: \(error.localizedDescription)")
         }
     }
@@ -895,8 +965,91 @@ public final class MusicLibraryViewModel: ObservableObject {
         guard let path = UserDefaults.standard.string(forKey: "artwork_\(track.id.uuidString)") else {
             return nil
         }
-        return URL(fileURLWithPath: path)
+        let url = URL(fileURLWithPath: path)
+        // Verify file exists
+        if FileManager.default.fileExists(atPath: path) {
+            return url
+        }
+        return nil
     }
+    
+    // MARK: - Track Renaming
+    
+    /// Rename a track's title and optionally artist
+    /// - Parameters:
+    ///   - track: The track to rename
+    ///   - newTitle: The new title for the track
+    ///   - newArtist: The new artist name (optional)
+    public func renameTrack(_ track: AudioTrack, newTitle: String, newArtist: String?) {
+        guard !newTitle.isEmpty else {
+            setError("Title cannot be empty")
+            return
+        }
+        
+        Logger.info("Renaming track '\(track.title)' to '\(newTitle)'", category: .library)
+        
+        // Find and update the track in our array
+        if let index = tracks.firstIndex(where: { $0.id == track.id }) {
+            // Create updated track with new metadata
+            let updatedTrack = AudioTrack(
+                id: track.id,
+                title: newTitle,
+                artist: newArtist,
+                album: track.album,
+                duration: track.duration,
+                fileURL: track.fileURL,
+                sourceType: track.sourceType,
+                fileSize: track.fileSize,
+                dateAdded: track.dateAdded,
+                lyrics: track.lyrics
+            )
+            
+            tracks[index] = updatedTrack
+            tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            
+            // Save the rename mapping to UserDefaults for persistence
+            saveTrackRename(trackId: track.id, newTitle: newTitle, newArtist: newArtist)
+            
+            Logger.success("Track renamed successfully", category: .library)
+        } else {
+            setError("Track not found")
+        }
+    }
+    
+    /// Save track rename to UserDefaults for persistence
+    private func saveTrackRename(trackId: UUID, newTitle: String, newArtist: String?) {
+        let key = "rename_\(trackId.uuidString)"
+        let renameData: [String: String?] = [
+            "title": newTitle,
+            "artist": newArtist
+        ]
+        if let data = try? JSONEncoder().encode(renameData) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+    
+    /// Load saved rename for a track
+    public func loadTrackRename(trackId: UUID) -> (title: String, artist: String?)? {
+        let key = "rename_\(trackId.uuidString)"
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let renameData = try? JSONDecoder().decode([String: String?].self, from: data),
+              let title = renameData["title"] as? String else {
+            return nil
+        }
+        return (title: title, artist: renameData["artist"] ?? nil)
+    }
+    
+    #if os(iOS)
+    /// Get album art image for a track
+    public func getAlbumArtImage(for track: AudioTrack) -> UIImage? {
+        guard let url = getAlbumArtURL(for: track),
+              let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return image
+    }
+    #endif
     
     private func getDocumentsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

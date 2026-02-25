@@ -162,39 +162,70 @@ public actor SpotifyExtractor {
     
     /// Scrape playlist tracks from Spotify embed page
     public func scrapePlaylist(id: String) async throws -> (name: String, tracks: [ScrapedTrack]) {
+        Logger.info("Scraping playlist with ID: \(id)", category: .spotify)
         let embedURL = "https://open.spotify.com/embed/playlist/\(id)"
+        Logger.debug("Fetching embed URL: \(embedURL)", category: .spotify)
+        
         let html = try await fetchPage(url: embedURL)
-        return try parsePlaylistFromEmbed(html: html, id: id)
+        Logger.debug("Received HTML response: \(html.count) characters", category: .spotify)
+        
+        let result = try await parsePlaylistFromEmbed(html: html, id: id)
+        Logger.info("Parsed playlist '\(result.name)' with \(result.tracks.count) tracks", category: .spotify)
+        
+        if result.tracks.isEmpty {
+            Logger.warning("No tracks found in playlist - HTML preview: \(String(html.prefix(500)))", category: .spotify)
+        }
+        
+        return result
     }
     
     /// Scrape album tracks from Spotify embed page
     public func scrapeAlbum(id: String) async throws -> (name: String, tracks: [ScrapedTrack]) {
         let embedURL = "https://open.spotify.com/embed/album/\(id)"
         let html = try await fetchPage(url: embedURL)
-        return try parseAlbumFromEmbed(html: html, id: id)
+        return try await parseAlbumFromEmbed(html: html, id: id)
     }
     
     private func fetchPage(url urlString: String) async throws -> String {
         guard let url = URL(string: urlString) else {
+            Logger.error("Invalid URL: \(urlString)", category: .spotify)
             throw SpotifyExtractionError.invalidURL
         }
         
         var request = URLRequest(url: url)
         request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
         request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         
-        let (data, response) = try await session.data(for: request)
+        Logger.logRequest(url: urlString, category: .spotify)
         
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200...299).contains(httpResponse.statusCode) else {
-            throw SpotifyExtractionError.extractionFailed("Failed to fetch page")
+        do {
+            let (data, response) = try await session.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                Logger.error("No HTTP response received", category: .spotify)
+                throw SpotifyExtractionError.extractionFailed("No HTTP response")
+            }
+            
+            Logger.logResponse(url: urlString, statusCode: httpResponse.statusCode, category: .spotify)
+            
+            guard (200...299).contains(httpResponse.statusCode) else {
+                Logger.error("HTTP error \(httpResponse.statusCode) for \(urlString)", category: .spotify)
+                throw SpotifyExtractionError.extractionFailed("HTTP \(httpResponse.statusCode)")
+            }
+            
+            guard let html = String(data: data, encoding: .utf8) else {
+                Logger.error("Could not decode response as UTF-8", category: .spotify)
+                throw SpotifyExtractionError.extractionFailed("Could not decode page")
+            }
+            
+            return html
+        } catch let error as SpotifyExtractionError {
+            throw error
+        } catch {
+            Logger.error("Network request failed", error: error, category: .spotify)
+            throw SpotifyExtractionError.networkError(error)
         }
-        
-        guard let html = String(data: data, encoding: .utf8) else {
-            throw SpotifyExtractionError.extractionFailed("Could not decode page")
-        }
-        
-        return html
     }
     
     private func parseTrackFromEmbed(html: String) throws -> ScrapedTrack {
@@ -266,9 +297,11 @@ public actor SpotifyExtractor {
         )
     }
     
-    private func parsePlaylistFromEmbed(html: String, id: String) throws -> (name: String, tracks: [ScrapedTrack]) {
+    private func parsePlaylistFromEmbed(html: String, id: String) async throws -> (name: String, tracks: [ScrapedTrack]) {
         var playlistName = "Spotify Playlist"
         var tracks: [ScrapedTrack] = []
+        
+        Logger.debug("Parsing playlist embed HTML (\(html.count) chars)", category: .spotify)
         
         // Extract playlist name from og:title
         if let titleMatch = html.range(of: #"<meta property="og:title" content="([^"]+)""#, options: .regularExpression) {
@@ -278,25 +311,38 @@ public actor SpotifyExtractor {
                 title = title.replacingOccurrences(of: "content=\"", with: "")
                 title = title.replacingOccurrences(of: "\"", with: "")
                 playlistName = decodeHTMLEntities(title)
+                Logger.info("Found playlist name: \(playlistName)", category: .spotify)
             }
         }
         
-        // Extract track list from embedded JSON data
-        // Look for track entries in the page data
-        let trackPattern = #""name"\s*:\s*"([^"]+)"[^}]*"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)""#
+        // Try multiple patterns to extract tracks from JSON data
+        // Pattern 1: Standard track object with artists array
+        let patterns = [
+            #""name"\s*:\s*"([^"]+)"[^}]*"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)""#,
+            #"\{"name":"([^"]+)","type":"track"[^}]*"artists":\[\{"name":"([^"]+)""#,
+            #""track":\{"name":"([^"]+)"[^}]*"artists":\[\{"name":"([^"]+)""#
+        ]
         
-        if let regex = try? NSRegularExpression(pattern: trackPattern, options: []) {
-            let range = NSRange(html.startIndex..., in: html)
-            let matches = regex.matches(in: html, options: [], range: range)
-            
-            for match in matches {
-                if let nameRange = Range(match.range(at: 1), in: html),
-                   let artistRange = Range(match.range(at: 2), in: html) {
-                    let name = decodeHTMLEntities(String(html[nameRange]))
-                    let artist = decodeHTMLEntities(String(html[artistRange]))
-                    
-                    // Avoid duplicates
-                    if !tracks.contains(where: { $0.name == name && $0.artist == artist }) {
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(html.startIndex..., in: html)
+                let matches = regex.matches(in: html, options: [], range: range)
+                
+                for match in matches {
+                    if let nameRange = Range(match.range(at: 1), in: html),
+                       let artistRange = Range(match.range(at: 2), in: html) {
+                        let name = decodeHTMLEntities(String(html[nameRange]))
+                        let artist = decodeHTMLEntities(String(html[artistRange]))
+                        
+                        // Skip playlist name and common false positives
+                        guard name != playlistName,
+                              !name.isEmpty,
+                              name.count > 1,
+                              !name.contains("Spotify"),
+                              !tracks.contains(where: { $0.name == name && $0.artist == artist }) else {
+                            continue
+                        }
+                        
                         tracks.append(ScrapedTrack(
                             name: name,
                             artist: artist,
@@ -307,17 +353,86 @@ public actor SpotifyExtractor {
                     }
                 }
             }
+            
+            // If we found tracks with this pattern, stop trying others
+            if !tracks.isEmpty { break }
         }
         
-        // If no tracks found via JSON, try alternative scraping via page
+        // If no tracks found via JSON patterns, try extracting from script data
         if tracks.isEmpty {
-            tracks = try scrapeTracksFromMainPage(type: "playlist", id: id)
+            tracks = try extractTracksFromScriptData(html: html, containerName: playlistName)
+        }
+        
+        // If still no tracks, try main page as fallback
+        if tracks.isEmpty {
+            tracks = try await scrapeTracksFromMainPage(type: "playlist", id: id)
         }
         
         return (name: playlistName, tracks: tracks)
     }
     
-    private func parseAlbumFromEmbed(html: String, id: String) throws -> (name: String, tracks: [ScrapedTrack]) {
+    /// Extract tracks from embedded script/JSON data in the page
+    private func extractTracksFromScriptData(html: String, containerName: String) throws -> [ScrapedTrack] {
+        var tracks: [ScrapedTrack] = []
+        
+        // Look for __NEXT_DATA__ or similar embedded JSON
+        let scriptPatterns = [
+            #"<script[^>]*id="__NEXT_DATA__"[^>]*>([^<]+)</script>"#,
+            #"Spotify\.Entity\s*=\s*(\{.+?\});"#,
+            #"window\.__PRELOADED_STATE__\s*=\s*(\{.+?\});"#
+        ]
+        
+        for pattern in scriptPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+               let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+               let jsonRange = Range(match.range(at: 1), in: html) {
+                
+                let jsonString = String(html[jsonRange])
+                
+                // Extract track/artist pairs from the JSON
+                let trackPattern = #""name"\s*:\s*"([^"]{2,80})""#
+                if let trackRegex = try? NSRegularExpression(pattern: trackPattern, options: []) {
+                    let matches = trackRegex.matches(in: jsonString, range: NSRange(jsonString.startIndex..., in: jsonString))
+                    
+                    var names: [String] = []
+                    for match in matches {
+                        if let nameRange = Range(match.range(at: 1), in: jsonString) {
+                            let name = decodeHTMLEntities(String(jsonString[nameRange]))
+                            if !name.contains("Spotify") && name != containerName && name.count > 1 {
+                                names.append(name)
+                            }
+                        }
+                    }
+                    
+                    // Pair names (assuming track, artist alternating or similar structure)
+                    // This is a heuristic - tracks often appear with their artist right after
+                    var i = 0
+                    while i < names.count - 1 {
+                        let potentialTrack = names[i]
+                        let potentialArtist = names[i + 1]
+                        
+                        // Skip if both look like artist names or both look like track names
+                        if !tracks.contains(where: { $0.name == potentialTrack }) {
+                            tracks.append(ScrapedTrack(
+                                name: potentialTrack,
+                                artist: potentialArtist,
+                                album: containerName,
+                                duration: 0,
+                                artworkURL: nil
+                            ))
+                        }
+                        i += 2
+                    }
+                }
+                
+                if !tracks.isEmpty { break }
+            }
+        }
+        
+        return tracks
+    }
+    
+    private func parseAlbumFromEmbed(html: String, id: String) async throws -> (name: String, tracks: [ScrapedTrack]) {
         var albumName = "Spotify Album"
         var albumArtist = "Unknown Artist"
         var tracks: [ScrapedTrack] = []
@@ -379,16 +494,66 @@ public actor SpotifyExtractor {
         
         // If no tracks found, try main page
         if tracks.isEmpty {
-            tracks = try scrapeTracksFromMainPage(type: "album", id: id)
+            tracks = try await scrapeTracksFromMainPage(type: "album", id: id)
         }
         
         return (name: albumName, tracks: tracks)
     }
     
-    private func scrapeTracksFromMainPage(type: String, id: String) throws -> [ScrapedTrack] {
+    private func scrapeTracksFromMainPage(type: String, id: String) async throws -> [ScrapedTrack] {
         // Fallback: fetch the main page and extract tracks
-        // This is a backup if embed page doesn't have track list
-        return []
+        let mainURL = "https://open.spotify.com/\(type)/\(id)"
+        
+        guard let url = URL(string: mainURL) else {
+            return []
+        }
+        
+        var request = URLRequest(url: url)
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        
+        let (data, response) = try await session.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode),
+              let html = String(data: data, encoding: .utf8) else {
+            return []
+        }
+        
+        var tracks: [ScrapedTrack] = []
+        
+        // Try to extract from the main page's embedded data
+        let trackArtistPattern = #""name":"([^"]+)"[^}]*?"artists":\[\{"[^}]*"name":"([^"]+)""#
+        
+        if let regex = try? NSRegularExpression(pattern: trackArtistPattern, options: []) {
+            let range = NSRange(html.startIndex..., in: html)
+            let matches = regex.matches(in: html, options: [], range: range)
+            
+            for match in matches {
+                if let nameRange = Range(match.range(at: 1), in: html),
+                   let artistRange = Range(match.range(at: 2), in: html) {
+                    let name = decodeHTMLEntities(String(html[nameRange]))
+                    let artist = decodeHTMLEntities(String(html[artistRange]))
+                    
+                    guard !name.isEmpty,
+                          name.count > 1,
+                          !name.contains("Spotify"),
+                          !tracks.contains(where: { $0.name == name && $0.artist == artist }) else {
+                        continue
+                    }
+                    
+                    tracks.append(ScrapedTrack(
+                        name: name,
+                        artist: artist,
+                        album: type == "album" ? name : "Spotify Playlist",
+                        duration: 0,
+                        artworkURL: nil
+                    ))
+                }
+            }
+        }
+        
+        return tracks
     }
     
     private func decodeHTMLEntities(_ string: String) -> String {
