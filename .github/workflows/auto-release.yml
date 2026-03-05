@@ -56,31 +56,6 @@ jobs:
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "Next version: $NEW_VERSION"
 
-      - name: Update CHANGELOG
-        run: |
-          NEW_VERSION="${{ steps.next_version.outputs.version }}"
-          DATE=$(date +%Y-%m-%d)
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          
-          # Create temp file with new entry
-          echo "" > /tmp/entry.txt
-          echo "## [$NEW_VERSION] - $DATE" >> /tmp/entry.txt
-          echo "" >> /tmp/entry.txt
-          echo "- $PR_TITLE (#$PR_NUMBER)" >> /tmp/entry.txt
-          
-          # Insert after Unreleased section
-          awk '/## \[Unreleased\]/{print; getline; print; while((getline line < "/tmp/entry.txt") > 0) print line; next}1' CHANGELOG.md > /tmp/changelog_new.md
-          mv /tmp/changelog_new.md CHANGELOG.md
-
-      - name: Commit changelog
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md
-          git commit -m "docs: update CHANGELOG for ${{ steps.next_version.outputs.version }}" || echo "No changes to commit"
-          git push
-
       - name: Create and push tag
         run: |
           NEW_VERSION="${{ steps.next_version.outputs.version }}"
