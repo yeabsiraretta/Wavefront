@@ -2,11 +2,11 @@
 .build/
 .swiftpm/
 DerivedData/
-*.xcodeproj/
-*.xcworkspace/
+build/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcodeproj/project.xcworkspace/xcshareddata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
 xcuserdata/
 *.playground/timeline.xctimeline
 *.playground/playground.xcworkspace
@@ -16,6 +16,7 @@ xcuserdata/
 *.ipa
 *.dSYM.zip
 *.dSYM
+*.xcarchive
 
 # macOS
 .DS_Store
@@ -31,6 +32,7 @@ xcuserdata/
 *~
 .idea/
 *.iml
+.vscode/
 
 # Dependencies
 Packages/
@@ -40,7 +42,18 @@ Package.resolved
 *.profraw
 *.profdata
 codecov/
+.coverage/
+
+# Secrets & Environment
+.env
+.env.*
+*.pem
+*.p12
+*.key
+*.cer
 
 # Misc
 *.log
 Thumbs.db
+*.tmp
+*.temp
