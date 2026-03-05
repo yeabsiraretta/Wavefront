@@ -16,7 +16,7 @@ let package = Package(
     dependencies: [
         // AMSMB2 for SMB2/3 network share access
         // Using branch reference to allow unsafe flags from libsmb2
-        .package(url: "https://github.com/amosavian/AMSMB2.git", from: "3.1.0"),
+        .package(url: "https://github.com/amosavian/AMSMB2.git", from: "4.0.3"),
         // YouTubeKit for native YouTube stream extraction
         .package(url: "https://github.com/alexeichhorn/YouTubeKit.git", from: "0.4.0")
     ],
