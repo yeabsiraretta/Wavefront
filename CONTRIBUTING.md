@@ -5,19 +5,15 @@
 ### Prerequisites
 
 - **Xcode 15+** with iOS 16+ SDK
-- **Node.js 18+** (for Git hooks)
-- **SwiftLint** (optional but recommended): `brew install swiftlint`
-- **SwiftFormat** (optional but recommended): `brew install swiftformat`
+- **SwiftLint** (optional): `brew install swiftlint`
+- **SwiftFormat** (optional): `brew install swiftformat`
 
 ### Initial Setup
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/yeabsiraretta/Wavefront.git
 cd Wavefront
-
-# Install Node dependencies (sets up Husky hooks)
-npm install
 
 # Build the project
 swift build
@@ -26,34 +22,52 @@ swift build
 swift test
 ```
 
-## Git Hooks
+## Commit Message Convention
 
-This project uses [Husky](https://typicode.github.io/husky/) for Git hooks.
+This project uses [Conventional Commits](https://www.conventionalcommits.org/). Commit messages are validated via GitHub Actions.
 
-### Pre-commit Hook
+### Format
 
-Runs automatically before each commit:
-
-1. **SwiftLint** - Checks code style (if installed)
-2. **SwiftFormat** - Verifies code formatting (if installed)
-3. **Build Check** - Ensures the project compiles
-
-To skip (not recommended):
-```bash
-git commit --no-verify -m "Your message"
+```
+type: description
 ```
 
-### Pre-push Hook
+or with scope:
 
-Runs automatically before each push:
+```
+type(scope): description
+```
 
-1. **Full Build** - Compiles the entire project
-2. **Unit Tests** - Runs all Swift tests
-3. **iOS Tests** - Runs simulator tests (if Xcode available)
+### Types
 
-To skip (not recommended):
+| Type | Description |
+|------|-------------|
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `docs` | Documentation only |
+| `style` | Code style (formatting, etc.) |
+| `refactor` | Code refactoring |
+| `test` | Adding or updating tests |
+| `chore` | Maintenance tasks |
+| `perf` | Performance improvements |
+| `ci` | CI/CD changes |
+| `build` | Build system changes |
+| `revert` | Revert a previous commit |
+
+### Rules
+
+- Single line only
+- Max 72 characters
+- No trailing period
+- Must start with a valid type
+
+### Examples
+
 ```bash
-git push --no-verify
+git commit -m "feat: add Spotify playlist import"
+git commit -m "fix(player): resolve background playback issue"
+git commit -m "docs: update README with setup instructions"
+git commit -m "chore: update dependencies"
 ```
 
 ## Testing
@@ -149,37 +163,23 @@ swiftformat Sources Tests --lint
 swiftformat Sources Tests
 ```
 
-## npm Scripts
-
-```bash
-npm run lint        # Run SwiftLint
-npm run lint:fix    # Auto-fix SwiftLint issues
-npm run format      # Format code with SwiftFormat
-npm run format:check # Check formatting
-npm run test        # Run Swift tests
-npm run test:ios    # Run iOS simulator tests
-npm run build       # Build project
-npm run clean       # Clean build artifacts
-```
-
 ## Project Structure
 
 ```
 Wavefront/
-├── App/                    # Xcode app entry point
-├── Sources/Wavefront/      # Main library source
-│   ├── Models/
-│   ├── Views/
-│   ├── ViewModels/
-│   ├── Services/
-│   ├── Sources/            # AudioSource implementations
-│   └── Protocols/
-├── Tests/WavefrontTests/   # Test files
-├── Resources/              # Assets, Info.plist
-├── .husky/                 # Git hooks
-├── .swiftlint.yml          # SwiftLint config
-├── .swiftformat            # SwiftFormat config
-└── Package.swift           # Swift Package definition
+├── App/                      # Xcode app entry point
+├── Sources/Wavefront/        # Main library source
+│   ├── Core/Models/          # Data models
+│   ├── Features/             # Feature modules (Library, Settings)
+│   ├── Services/             # Business logic services
+│   │   ├── Audio/            # AudioPlayer, ShuffleService
+│   │   ├── Spotify/          # SpotifyExtractor
+│   │   ├── YouTube/          # YouTubeKitExtractor
+│   │   └── LastFM/           # LastFMService
+│   └── Protocols/            # Protocol definitions
+├── Tests/WavefrontTests/     # Test files
+├── .github/workflows/        # GitHub Actions (CI, commit linting)
+└── Package.swift             # Swift Package definition
 ```
 
 ## Making Changes
@@ -187,18 +187,11 @@ Wavefront/
 1. Create a feature branch: `git checkout -b feature/my-feature`
 2. Make your changes
 3. Run tests: `swift test`
-4. Commit (hooks will run): `git commit -m "Add my feature"`
-5. Push (hooks will run): `git push origin feature/my-feature`
+4. Commit with conventional format: `git commit -m "feat: add my feature"`
+5. Push: `git push origin feature/my-feature`
 6. Create a Pull Request
 
 ## Troubleshooting
-
-### Hooks not running
-
-```bash
-# Reinstall Husky
-npm run prepare
-```
 
 ### SwiftLint/SwiftFormat not found
 
@@ -212,4 +205,16 @@ brew install swiftlint swiftformat
 # Clean and rebuild
 swift package clean
 swift build
+```
+
+### Commit rejected by CI
+
+Ensure your commit message follows the conventional format:
+
+```bash
+# Wrong
+git commit -m "fixed bug"
+
+# Correct
+git commit -m "fix: resolve playback issue"
 ```
