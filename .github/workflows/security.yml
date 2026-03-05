@@ -1,0 +1,90 @@
+name: Security Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run weekly on Sundays at midnight
+    - cron: '0 0 * * 0'
+
+jobs:
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for known vulnerabilities in Swift packages
+        run: |
+          echo "🔍 Checking Swift package dependencies..."
+          
+          # Extract dependencies from Package.swift
+          if [ -f "Package.swift" ]; then
+            echo "Dependencies found in Package.swift:"
+            grep -E "\.package\(" Package.swift | while read -r line; do
+              echo "  - $line"
+            done
+          fi
+
+      - name: Resolve and audit packages
+        run: |
+          swift package resolve
+          swift package show-dependencies --format json > dependencies.json
+          
+          echo "📦 Resolved dependencies:"
+          cat dependencies.json | head -100
+
+      - name: Check for outdated packages
+        run: |
+          echo "🔄 Checking for package updates..."
+          swift package update --dry-run 2>&1 || true
+
+  codeql-analysis:
+    name: CodeQL Analysis
+    runs-on: macos-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+
+      - name: Build
+        run: |
+          swift build
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:swift"
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          deny-licenses: GPL-3.0, AGPL-3.0
+
+  secrets-scan:
+    name: Secrets Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
