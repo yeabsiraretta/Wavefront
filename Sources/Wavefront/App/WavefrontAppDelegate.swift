@@ -56,7 +56,7 @@ public class WavefrontAppDelegate: NSObject, UIApplicationDelegate {
     private func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetooth])
+            try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetoothA2DP])
             try session.setActive(true)
             Logger.success("Audio session configured", category: .audio)
         } catch {

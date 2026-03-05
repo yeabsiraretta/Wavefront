@@ -708,8 +708,8 @@ private struct WaveformPage: View {
             }
             .frame(maxWidth: .infinity, maxHeight: 200)
             .padding(.horizontal, 24)
-            .onAppear {
-                generateFullWaveform()
+            .task {
+                await generateFullWaveform()
             }
             
             // Window time range display
@@ -768,25 +768,24 @@ private struct WaveformPage: View {
         return min(currentTime / duration, 1.0)
     }
     
-    /// Generate waveform data for the entire song
-    private func generateFullWaveform() {
+    /// Generate waveform data for the entire song from actual audio
+    private func generateFullWaveform() async {
         guard let duration = track.duration, duration > 0 else {
             allWaveformBars = Array(repeating: 0.5, count: 100)
             return
         }
         
-        // Generate more bars for longer songs (roughly 6 bars per second)
+        // Calculate total bars needed (roughly 6 bars per second)
         let totalBars = Int(duration * 6)
-        let seed = track.title.hashValue
-        var bars: [CGFloat] = []
         
-        for i in 0..<totalBars {
-            let random = abs((seed + i * 31) % 100)
-            let height = CGFloat(30 + random % 70) / 100.0
-            bars.append(height)
-        }
+        // Analyze actual audio file for amplitude data
+        let waveform = await WaveformAnalyzer.shared.getWaveform(
+            for: track.id,
+            url: track.fileURL,
+            sampleCount: totalBars
+        )
         
-        allWaveformBars = bars
+        allWaveformBars = waveform
     }
     
     /// Get bar data for a display position in the sliding window
