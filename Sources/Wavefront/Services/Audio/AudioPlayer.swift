@@ -1,6 +1,9 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
+#if os(iOS)
+import UIKit
+#endif
 
 /**
  * Represents the current state of audio playback.
@@ -291,6 +294,12 @@ public final class AudioPlayer: NSObject, @unchecked Sendable {
     
     // MARK: - Now Playing Info
     
+    /// Callback for next track command from lock screen
+    public var onNextTrack: (() -> Void)?
+    
+    /// Callback for previous track command from lock screen
+    public var onPreviousTrack: (() -> Void)?
+    
     private func setupRemoteCommandCenter() {
         let commandCenter = MPRemoteCommandCenter.shared()
         
@@ -328,6 +337,17 @@ public final class AudioPlayer: NSObject, @unchecked Sendable {
             self?.seek(to: event.positionTime)
             return .success
         }
+        
+        // Next/Previous track commands
+        commandCenter.nextTrackCommand.addTarget { [weak self] _ in
+            self?.onNextTrack?()
+            return .success
+        }
+        
+        commandCenter.previousTrackCommand.addTarget { [weak self] _ in
+            self?.onPreviousTrack?()
+            return .success
+        }
     }
     
     private func updateNowPlayingInfo() {
@@ -347,6 +367,17 @@ public final class AudioPlayer: NSObject, @unchecked Sendable {
         if let album = track.album {
             nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
         }
+        
+        // Load album artwork for lock screen
+        #if os(iOS)
+        if let artworkPath = UserDefaults.standard.string(forKey: "artwork_\(track.id.uuidString)"),
+           FileManager.default.fileExists(atPath: artworkPath),
+           let data = FileManager.default.contents(atPath: artworkPath),
+           let image = UIImage(data: data) {
+            let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+            nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+        }
+        #endif
         
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }

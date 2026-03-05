@@ -49,6 +49,9 @@ public struct AudioTrack: Identifiable, Equatable, Hashable, Sendable {
     /// Lyrics text for the track, nil if unavailable
     public let lyrics: String?
     
+    /// URL to album artwork image (local file or remote URL)
+    public let artworkURL: URL?
+    
     /**
      * Creates a new AudioTrack instance.
      *
@@ -62,6 +65,7 @@ public struct AudioTrack: Identifiable, Equatable, Hashable, Sendable {
      * @param fileSize - Optional file size in bytes
      * @param dateAdded - Date added (defaults to current date)
      * @param lyrics - Optional lyrics text
+     * @param artworkURL - Optional URL to album artwork
      */
     public init(
         id: UUID = UUID(),
@@ -73,7 +77,8 @@ public struct AudioTrack: Identifiable, Equatable, Hashable, Sendable {
         sourceType: AudioSourceType,
         fileSize: Int64? = nil,
         dateAdded: Date = Date(),
-        lyrics: String? = nil
+        lyrics: String? = nil,
+        artworkURL: URL? = nil
     ) {
         self.id = id
         self.title = title
@@ -85,6 +90,7 @@ public struct AudioTrack: Identifiable, Equatable, Hashable, Sendable {
         self.fileSize = fileSize
         self.dateAdded = dateAdded
         self.lyrics = lyrics
+        self.artworkURL = artworkURL
     }
 }
 

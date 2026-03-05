@@ -316,17 +316,25 @@ public actor SpotifyExtractor {
         }
         
         // Try multiple patterns to extract tracks from JSON data
-        // Pattern 1: Standard track object with artists array
         let patterns = [
+            // Pattern 1: track items array format
+            #"\{"name":"([^"]+)","uri":"spotify:track:[^"]+","uid":"[^"]*","artists":\[\{"name":"([^"]+)""#,
+            // Pattern 2: Standard track object with artists array
             #""name"\s*:\s*"([^"]+)"[^}]*"artists"\s*:\s*\[\s*\{\s*"name"\s*:\s*"([^"]+)""#,
+            // Pattern 3: Compact format
             #"\{"name":"([^"]+)","type":"track"[^}]*"artists":\[\{"name":"([^"]+)""#,
-            #""track":\{"name":"([^"]+)"[^}]*"artists":\[\{"name":"([^"]+)""#
+            // Pattern 4: Track wrapper
+            #""track":\{"name":"([^"]+)"[^}]*"artists":\[\{"name":"([^"]+)""#,
+            // Pattern 5: Simple name/artists pair (more permissive)
+            #""name":"([^"]{2,100})","[^"]*artists[^"]*":\[\{[^}]*"name":"([^"]+)""#
         ]
         
         for pattern in patterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
                 let range = NSRange(html.startIndex..., in: html)
                 let matches = regex.matches(in: html, options: [], range: range)
+                
+                Logger.debug("Pattern matched \(matches.count) times: \(pattern.prefix(50))...", category: .spotify)
                 
                 for match in matches {
                     if let nameRange = Range(match.range(at: 1), in: html),
@@ -338,7 +346,9 @@ public actor SpotifyExtractor {
                         guard name != playlistName,
                               !name.isEmpty,
                               name.count > 1,
-                              !name.contains("Spotify"),
+                              !name.lowercased().contains("spotify"),
+                              !name.lowercased().contains("playlist"),
+                              artist.count > 1,
                               !tracks.contains(where: { $0.name == name && $0.artist == artist }) else {
                             continue
                         }
@@ -355,17 +365,28 @@ public actor SpotifyExtractor {
             }
             
             // If we found tracks with this pattern, stop trying others
-            if !tracks.isEmpty { break }
+            if !tracks.isEmpty {
+                Logger.info("Found \(tracks.count) tracks using pattern", category: .spotify)
+                break
+            }
         }
         
         // If no tracks found via JSON patterns, try extracting from script data
         if tracks.isEmpty {
+            Logger.debug("No tracks from JSON patterns, trying script data extraction", category: .spotify)
             tracks = try extractTracksFromScriptData(html: html, containerName: playlistName)
         }
         
         // If still no tracks, try main page as fallback
         if tracks.isEmpty {
+            Logger.debug("No tracks from script data, trying main page fallback", category: .spotify)
             tracks = try await scrapeTracksFromMainPage(type: "playlist", id: id)
+        }
+        
+        // Last resort: try the oembed API
+        if tracks.isEmpty {
+            Logger.debug("Trying oEmbed API fallback", category: .spotify)
+            tracks = try await scrapeTracksFromOEmbed(type: "playlist", id: id, containerName: playlistName)
         }
         
         return (name: playlistName, tracks: tracks)
@@ -375,58 +396,226 @@ public actor SpotifyExtractor {
     private func extractTracksFromScriptData(html: String, containerName: String) throws -> [ScrapedTrack] {
         var tracks: [ScrapedTrack] = []
         
-        // Look for __NEXT_DATA__ or similar embedded JSON
-        let scriptPatterns = [
-            #"<script[^>]*id="__NEXT_DATA__"[^>]*>([^<]+)</script>"#,
-            #"Spotify\.Entity\s*=\s*(\{.+?\});"#,
-            #"window\.__PRELOADED_STATE__\s*=\s*(\{.+?\});"#
-        ]
+        Logger.debug("Extracting tracks from script data", category: .spotify)
         
-        for pattern in scriptPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
-               let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
-               let jsonRange = Range(match.range(at: 1), in: html) {
+        // Look for __NEXT_DATA__ script tag - Next.js apps embed data here
+        if let startRange = html.range(of: #"<script id="__NEXT_DATA__" type="application/json">"#),
+           let endRange = html.range(of: "</script>", range: startRange.upperBound..<html.endIndex) {
+            
+            let jsonString = String(html[startRange.upperBound..<endRange.lowerBound])
+            Logger.debug("Found __NEXT_DATA__ JSON: \(jsonString.count) chars", category: .spotify)
+            
+            // Parse as JSON and navigate the structure
+            if let jsonData = jsonString.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
                 
-                let jsonString = String(html[jsonRange])
+                // Log top-level keys for debugging
+                Logger.debug("__NEXT_DATA__ top-level keys: \(json.keys.sorted())", category: .spotify)
                 
-                // Extract track/artist pairs from the JSON
-                let trackPattern = #""name"\s*:\s*"([^"]{2,80})""#
-                if let trackRegex = try? NSRegularExpression(pattern: trackPattern, options: []) {
-                    let matches = trackRegex.matches(in: jsonString, range: NSRange(jsonString.startIndex..., in: jsonString))
-                    
-                    var names: [String] = []
-                    for match in matches {
-                        if let nameRange = Range(match.range(at: 1), in: jsonString) {
-                            let name = decodeHTMLEntities(String(jsonString[nameRange]))
-                            if !name.contains("Spotify") && name != containerName && name.count > 1 {
-                                names.append(name)
-                            }
-                        }
+                // Log props structure if available
+                if let props = json["props"] as? [String: Any] {
+                    Logger.debug("props keys: \(props.keys.sorted())", category: .spotify)
+                    if let pageProps = props["pageProps"] as? [String: Any] {
+                        Logger.debug("pageProps keys: \(pageProps.keys.sorted())", category: .spotify)
                     }
-                    
-                    // Pair names (assuming track, artist alternating or similar structure)
-                    // This is a heuristic - tracks often appear with their artist right after
-                    var i = 0
-                    while i < names.count - 1 {
-                        let potentialTrack = names[i]
-                        let potentialArtist = names[i + 1]
+                }
+                
+                // Navigate to track items - structure: props.pageProps.state.data.entity.trackList
+                tracks = extractTracksFromNextData(json: json, containerName: containerName)
+                
+                if !tracks.isEmpty {
+                    Logger.info("Extracted \(tracks.count) tracks from __NEXT_DATA__", category: .spotify)
+                    return tracks
+                } else {
+                    // Log a sample of the JSON to understand structure
+                    let jsonPreview = String(jsonString.prefix(2000))
+                    Logger.debug("__NEXT_DATA__ preview: \(jsonPreview)", category: .spotify)
+                }
+            }
+        }
+        
+        // Fallback: Look for track items in any script with JSON-like content
+        // Pattern: items array containing track objects
+        let itemsPattern = #""items"\s*:\s*\[(.*?)\]"#
+        if let regex = try? NSRegularExpression(pattern: itemsPattern, options: [.dotMatchesLineSeparators]),
+           let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+           let itemsRange = Range(match.range(at: 1), in: html) {
+            
+            let itemsString = String(html[itemsRange])
+            
+            // Extract individual track objects with name and artists
+            let trackObjPattern = #"\{"[^}]*"name"\s*:\s*"([^"]+)"[^}]*"artists"\s*:\s*\[\s*\{[^}]*"name"\s*:\s*"([^"]+)""#
+            if let trackRegex = try? NSRegularExpression(pattern: trackObjPattern, options: []) {
+                let matches = trackRegex.matches(in: itemsString, range: NSRange(itemsString.startIndex..., in: itemsString))
+                
+                for match in matches {
+                    if let nameRange = Range(match.range(at: 1), in: itemsString),
+                       let artistRange = Range(match.range(at: 2), in: itemsString) {
+                        let name = decodeHTMLEntities(String(itemsString[nameRange]))
+                        let artist = decodeHTMLEntities(String(itemsString[artistRange]))
                         
-                        // Skip if both look like artist names or both look like track names
-                        if !tracks.contains(where: { $0.name == potentialTrack }) {
+                        if !name.isEmpty && name.count > 1 && !tracks.contains(where: { $0.name == name }) {
                             tracks.append(ScrapedTrack(
-                                name: potentialTrack,
-                                artist: potentialArtist,
+                                name: name,
+                                artist: artist,
                                 album: containerName,
                                 duration: 0,
                                 artworkURL: nil
                             ))
                         }
-                        i += 2
+                    }
+                }
+            }
+        }
+        
+        return tracks
+    }
+    
+    /// Navigate Next.js JSON structure to find track items
+    private func extractTracksFromNextData(json: [String: Any], containerName: String) -> [ScrapedTrack] {
+        var tracks: [ScrapedTrack] = []
+        var playlistName = containerName
+        
+        // Try various paths where track data might be located
+        let paths: [[String]] = [
+            ["props", "pageProps", "state", "data", "entity", "trackList"],
+            ["props", "pageProps", "state", "data", "entity", "tracks", "items"],
+            ["props", "pageProps", "data", "entity", "trackList"],
+            ["props", "pageProps", "data", "playlist", "tracks", "items"],
+            ["props", "pageProps", "playlist", "tracks", "items"]
+        ]
+        
+        // Try to get playlist name from entity
+        if let entity = navigateJSON(json: json, path: ["props", "pageProps", "state", "data", "entity"]) as? [String: Any],
+           let name = entity["name"] as? String {
+            playlistName = name
+            Logger.debug("Found playlist name from entity: \(playlistName)", category: .spotify)
+        }
+        
+        for path in paths {
+            if let items = navigateJSON(json: json, path: path) as? [[String: Any]] {
+                Logger.debug("Found \(items.count) items at path: \(path.joined(separator: "."))", category: .spotify)
+                
+                for item in items {
+                    // Handle both direct track objects and wrapped track objects
+                    let trackObj = (item["track"] as? [String: Any]) ?? item
+                    
+                    // Spotify embed format uses "title" and "subtitle" instead of "name" and "artists"
+                    if let title = trackObj["title"] as? String,
+                       let subtitle = trackObj["subtitle"] as? String {
+                        
+                        // Get duration (in milliseconds)
+                        let durationMs = trackObj["duration"] as? Double ?? 0
+                        let duration = durationMs / 1000.0
+                        
+                        tracks.append(ScrapedTrack(
+                            name: title,
+                            artist: subtitle,
+                            album: playlistName,
+                            duration: duration,
+                            artworkURL: nil
+                        ))
+                        continue
+                    }
+                    
+                    // Also try standard format with "name" and "artists" array
+                    if let name = trackObj["name"] as? String,
+                       let artists = trackObj["artists"] as? [[String: Any]],
+                       let firstArtist = artists.first,
+                       let artistName = firstArtist["name"] as? String {
+                        
+                        // Get artwork if available
+                        var artworkURL: URL?
+                        if let album = trackObj["album"] as? [String: Any],
+                           let images = album["images"] as? [[String: Any]],
+                           let firstImage = images.first,
+                           let urlString = firstImage["url"] as? String {
+                            artworkURL = URL(string: urlString)
+                        }
+                        
+                        // Get duration
+                        let duration = (trackObj["duration_ms"] as? Double ?? 0) / 1000.0
+                        
+                        tracks.append(ScrapedTrack(
+                            name: name,
+                            artist: artistName,
+                            album: playlistName,
+                            duration: duration,
+                            artworkURL: artworkURL
+                        ))
                     }
                 }
                 
-                if !tracks.isEmpty { break }
+                if !tracks.isEmpty {
+                    Logger.info("Extracted \(tracks.count) tracks from path: \(path.joined(separator: "."))", category: .spotify)
+                    break
+                }
             }
+        }
+        
+        // If structured paths didn't work, recursively search for track-like objects
+        if tracks.isEmpty {
+            tracks = findTracksRecursively(in: json, containerName: playlistName)
+        }
+        
+        return tracks
+    }
+    
+    /// Navigate JSON using a path of keys
+    private func navigateJSON(json: Any, path: [String]) -> Any? {
+        var current: Any = json
+        for key in path {
+            if let dict = current as? [String: Any], let next = dict[key] {
+                current = next
+            } else {
+                return nil
+            }
+        }
+        return current
+    }
+    
+    /// Recursively search JSON for track-like objects
+    private func findTracksRecursively(in json: Any, containerName: String, maxDepth: Int = 10) -> [ScrapedTrack] {
+        guard maxDepth > 0 else { return [] }
+        var tracks: [ScrapedTrack] = []
+        
+        if let dict = json as? [String: Any] {
+            // Check if this looks like a track object
+            if let name = dict["name"] as? String,
+               let artists = dict["artists"] as? [[String: Any]],
+               let firstArtist = artists.first,
+               let artistName = firstArtist["name"] as? String,
+               let type = dict["type"] as? String,
+               type == "track" {
+                
+                let duration = (dict["duration_ms"] as? Double ?? 0) / 1000.0
+                
+                tracks.append(ScrapedTrack(
+                    name: name,
+                    artist: artistName,
+                    album: containerName,
+                    duration: duration,
+                    artworkURL: nil
+                ))
+            }
+            
+            // Recursively search values
+            for (_, value) in dict {
+                tracks.append(contentsOf: findTracksRecursively(in: value, containerName: containerName, maxDepth: maxDepth - 1))
+            }
+        } else if let array = json as? [Any] {
+            for item in array {
+                tracks.append(contentsOf: findTracksRecursively(in: item, containerName: containerName, maxDepth: maxDepth - 1))
+            }
+        }
+        
+        // Deduplicate
+        var seen = Set<String>()
+        tracks = tracks.filter { track in
+            let key = "\(track.name)|\(track.artist)"
+            if seen.contains(key) { return false }
+            seen.insert(key)
+            return true
         }
         
         return tracks
@@ -554,6 +743,73 @@ public actor SpotifyExtractor {
         }
         
         return tracks
+    }
+    
+    /// Fallback: Use Spotify's oEmbed API to get basic info, then scrape individual tracks
+    private func scrapeTracksFromOEmbed(type: String, id: String, containerName: String) async throws -> [ScrapedTrack] {
+        let oembedURL = "https://open.spotify.com/oembed?url=https://open.spotify.com/\(type)/\(id)"
+        
+        guard let url = URL(string: oembedURL) else { return [] }
+        
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        do {
+            let (data, response) = try await session.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                return []
+            }
+            
+            // Parse oEmbed response - it contains an HTML snippet with track links
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let html = json["html"] as? String {
+                
+                // Extract track IDs from the iframe src or embedded content
+                var trackIDs: [String] = []
+                
+                // Look for track IDs in the HTML
+                let trackIDPattern = #"spotify\.com/(?:embed/)?track/([a-zA-Z0-9]+)"#
+                if let regex = try? NSRegularExpression(pattern: trackIDPattern, options: []) {
+                    let range = NSRange(html.startIndex..., in: html)
+                    let matches = regex.matches(in: html, options: [], range: range)
+                    
+                    for match in matches {
+                        if let idRange = Range(match.range(at: 1), in: html) {
+                            let trackID = String(html[idRange])
+                            if !trackIDs.contains(trackID) {
+                                trackIDs.append(trackID)
+                            }
+                        }
+                    }
+                }
+                
+                // Fetch metadata for each track
+                var tracks: [ScrapedTrack] = []
+                for trackID in trackIDs.prefix(50) { // Limit to 50 tracks
+                    do {
+                        let track = try await scrapeTrack(id: trackID)
+                        tracks.append(ScrapedTrack(
+                            name: track.name,
+                            artist: track.artist,
+                            album: containerName,
+                            duration: track.duration,
+                            artworkURL: track.artworkURL
+                        ))
+                    } catch {
+                        // Skip failed tracks
+                        continue
+                    }
+                }
+                
+                return tracks
+            }
+        } catch {
+            Logger.debug("oEmbed fallback failed: \(error)", category: .spotify)
+        }
+        
+        return []
     }
     
     private func decodeHTMLEntities(_ string: String) -> String {

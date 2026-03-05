@@ -70,6 +70,18 @@ public final class MusicLibraryViewModel: ObservableObject {
     /// Queue of tracks to play next, in order
     @Published public private(set) var playQueue: [AudioTrack] = []
     
+    /// Current shuffle mode
+    @Published public var shuffleMode: ShuffleMode = ShuffleService.shared.currentMode
+    
+    /// Set of track IDs that have been played in this session (for smart shuffle)
+    private var playedTrackIds: Set<UUID> = []
+    
+    /// Last.fm service for scrobbling
+    private let lastFMService = LastFMService.shared
+    
+    /// Track play start time for scrobbling
+    private var currentTrackStartTime: Date?
+    
     private let sourceManager: AudioSourceManager
     private let player: AudioPlayer
     private let metadataService: MetadataService
@@ -121,6 +133,18 @@ public final class MusicLibraryViewModel: ObservableObject {
         
         // Set up player delegate for time updates
         player.delegate = self
+        
+        // Set up lock screen controls for next/previous track
+        player.onNextTrack = { [weak self] in
+            Task { @MainActor in
+                self?.playNextTrack()
+            }
+        }
+        player.onPreviousTrack = { [weak self] in
+            Task { @MainActor in
+                self?.playPreviousTrack()
+            }
+        }
         
         // Set up Spotify extractor if credentials are configured
         setupSpotifyExtractor()
@@ -214,11 +238,37 @@ public final class MusicLibraryViewModel: ObservableObject {
      * @param track - The AudioTrack to play
      */
     public func play(_ track: AudioTrack) {
+        // Scrobble the previous track if it was played long enough
+        scrobblePreviousTrackIfNeeded()
+        
         currentTrack = track
         isPlaying = true
+        currentTrackStartTime = Date()
+        playedTrackIds.insert(track.id)
         
         Task {
             await player.play(track)
+            // Update Last.fm "Now Playing"
+            await lastFMService.updateNowPlaying(track: track)
+        }
+    }
+    
+    /// Scrobble the previous track if it was played for at least 30 seconds or 50% of duration
+    private func scrobblePreviousTrackIfNeeded() {
+        guard let previousTrack = currentTrack,
+              let startTime = currentTrackStartTime else { return }
+        
+        let playedDuration = Date().timeIntervalSince(startTime)
+        let trackDuration = previousTrack.duration ?? 0
+        
+        // Scrobble if played for 30+ seconds or 50%+ of track
+        let shouldScrobble = playedDuration >= 30 || 
+            (trackDuration > 0 && playedDuration >= trackDuration * 0.5)
+        
+        if shouldScrobble {
+            Task {
+                await lastFMService.scrobble(track: previousTrack, playedAt: startTime)
+            }
         }
     }
     
@@ -243,6 +293,72 @@ public final class MusicLibraryViewModel: ObservableObject {
         player.stop()
         isPlaying = false
         currentTrack = nil
+    }
+    
+    /// Play the next track based on shuffle mode
+    public func playNextTrack() {
+        // First check the queue
+        if !playQueue.isEmpty {
+            let nextTrack = playQueue.removeFirst()
+            play(nextTrack)
+            return
+        }
+        
+        // Use shuffle service to determine next track
+        guard let current = currentTrack else {
+            if let first = tracks.first {
+                play(first)
+            }
+            return
+        }
+        
+        if let nextTrack = ShuffleService.shared.getNextTrack(
+            current: current,
+            from: tracks,
+            playedTracks: playedTrackIds
+        ) {
+            play(nextTrack)
+        }
+    }
+    
+    /// Play the previous track (goes back in play history)
+    public func playPreviousTrack() {
+        guard let current = currentTrack,
+              let currentIndex = tracks.firstIndex(where: { $0.id == current.id }) else {
+            return
+        }
+        
+        // If we're more than 3 seconds in, restart the current track
+        if currentPlaybackTime > 3 {
+            player.seek(to: 0)
+            return
+        }
+        
+        // Otherwise go to previous track
+        let previousIndex = currentIndex - 1
+        if previousIndex >= 0 {
+            play(tracks[previousIndex])
+        }
+    }
+    
+    // MARK: - Shuffle Control
+    
+    /// Toggle shuffle mode (cycles through: Off -> Random -> Smart -> Off)
+    public func toggleShuffle() -> ShuffleMode {
+        shuffleMode = ShuffleService.shared.cycleMode()
+        return shuffleMode
+    }
+    
+    /// Set a specific shuffle mode
+    public func setShuffleMode(_ mode: ShuffleMode) {
+        ShuffleService.shared.setMode(mode)
+        shuffleMode = mode
+    }
+    
+    /// Shuffle the current queue
+    public func shuffleQueue() {
+        guard !playQueue.isEmpty else { return }
+        playQueue = ShuffleService.shared.shuffle(playQueue, basedOn: currentTrack)
     }
     
     // MARK: - Queue Management
@@ -787,7 +903,8 @@ public final class MusicLibraryViewModel: ObservableObject {
             album: result.album,
             duration: result.duration,
             fileURL: result.localURL,
-            sourceType: .local
+            sourceType: .local,
+            artworkURL: result.albumArtURL
         )
         
         tracks.append(audioTrack)
@@ -825,7 +942,8 @@ public final class MusicLibraryViewModel: ObservableObject {
                     album: result.album,
                     duration: result.duration,
                     fileURL: result.localURL,
-                    sourceType: .local
+                    sourceType: .local,
+                    artworkURL: result.albumArtURL
                 )
                 
                 tracks.append(audioTrack)
@@ -874,7 +992,8 @@ public final class MusicLibraryViewModel: ObservableObject {
                     album: result.album,
                     duration: result.duration,
                     fileURL: result.localURL,
-                    sourceType: .local
+                    sourceType: .local,
+                    artworkURL: result.albumArtURL
                 )
                 
                 tracks.append(audioTrack)
@@ -932,6 +1051,73 @@ public final class MusicLibraryViewModel: ObservableObject {
             thought.trackTitle == track.title &&
             thought.trackArtist == track.artist
         }
+    }
+    
+    // MARK: - Last.fm Metadata Refresh
+    
+    /// Refresh metadata for all tracks using Last.fm
+    /// - Parameter progressHandler: Callback with progress (0-1) and status message
+    public func refreshMetadataFromLastFM(
+        progressHandler: @escaping (Double, String) -> Void
+    ) async {
+        let totalTracks = tracks.count
+        guard totalTracks > 0 else { return }
+        
+        var updatedCount = 0
+        var errorCount = 0
+        
+        for (index, track) in tracks.enumerated() {
+            let progress = Double(index) / Double(totalTracks)
+            progressHandler(progress, "Processing: \(track.title)")
+            
+            do {
+                // Search Last.fm using the song title (and artist if available)
+                if let metadata = try await lastFMService.getTrackInfo(
+                    title: track.title,
+                    artist: track.artist
+                ) {
+                    // Update the track with new metadata
+                    let updatedTrack = AudioTrack(
+                        id: track.id,
+                        title: metadata.title,
+                        artist: metadata.artist,
+                        album: metadata.album ?? track.album,
+                        duration: metadata.duration ?? track.duration,
+                        fileURL: track.fileURL,
+                        sourceType: track.sourceType,
+                        fileSize: track.fileSize,
+                        dateAdded: track.dateAdded,
+                        lyrics: track.lyrics,
+                        artworkURL: track.artworkURL
+                    )
+                    
+                    // Replace track in array
+                    if let trackIndex = tracks.firstIndex(where: { $0.id == track.id }) {
+                        tracks[trackIndex] = updatedTrack
+                        updatedCount += 1
+                    }
+                }
+                
+                // Small delay to avoid rate limiting
+                try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+                
+            } catch {
+                errorCount += 1
+                Logger.error("Failed to fetch metadata for '\(track.title)'", error: error, category: .general)
+            }
+        }
+        
+        // Final progress
+        progressHandler(1.0, "Complete: \(updatedCount) updated, \(errorCount) errors")
+        
+        // Re-sort tracks
+        tracks.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        
+        if errorCount > 0 {
+            setError("Metadata refresh: \(updatedCount) tracks updated, \(errorCount) failed")
+        }
+        
+        Logger.success("Metadata refresh complete: \(updatedCount) updated, \(errorCount) errors", category: .general)
     }
     
     // MARK: - Album Art

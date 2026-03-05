@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 #if os(iOS)
 import UIKit
 #endif
@@ -120,7 +121,11 @@ public struct MusicLibraryView: View {
                             isPlaying: viewModel.isPlaying,
                             currentTime: viewModel.currentPlaybackTime,
                             onPlayPause: { viewModel.togglePlayPause() },
-                            onStop: { viewModel.stop() }
+                            onStop: { viewModel.stop() },
+                            onNext: { viewModel.playNextTrack() },
+                            onPrevious: { viewModel.playPreviousTrack() },
+                            onShuffleToggle: { viewModel.toggleShuffle() },
+                            shuffleMode: viewModel.shuffleMode
                         )
                     }
                 }
@@ -326,6 +331,10 @@ struct NowPlayingBar: View {
     let currentTime: TimeInterval
     let onPlayPause: () -> Void
     let onStop: () -> Void
+    var onNext: (() -> Void)? = nil
+    var onPrevious: (() -> Void)? = nil
+    var onShuffleToggle: (() -> ShuffleMode)? = nil
+    var shuffleMode: ShuffleMode = .off
     @State private var showingExpandedPlayer = false
     @ObservedObject private var userLibrary = UserLibrary.shared
     
@@ -383,7 +392,11 @@ struct NowPlayingBar: View {
                     onPlayPause: onPlayPause,
                     onStop: onStop,
                     onLike: { userLibrary.toggleLike(track) },
-                    onDismiss: { showingExpandedPlayer = false }
+                    onDismiss: { showingExpandedPlayer = false },
+                    onNext: onNext,
+                    onPrevious: onPrevious,
+                    onShuffleToggle: onShuffleToggle,
+                    shuffleMode: shuffleMode
                 )
             }
             #else
@@ -396,7 +409,11 @@ struct NowPlayingBar: View {
                     onPlayPause: onPlayPause,
                     onStop: onStop,
                     onLike: { userLibrary.toggleLike(track) },
-                    onDismiss: { showingExpandedPlayer = false }
+                    onDismiss: { showingExpandedPlayer = false },
+                    onNext: onNext,
+                    onPrevious: onPrevious,
+                    onShuffleToggle: onShuffleToggle,
+                    shuffleMode: shuffleMode
                 )
                 .frame(minWidth: 400, minHeight: 600)
             }
@@ -415,6 +432,10 @@ struct ExpandedPlayerView: View {
     let onStop: () -> Void
     let onLike: () -> Void
     let onDismiss: () -> Void
+    var onNext: (() -> Void)? = nil
+    var onPrevious: (() -> Void)? = nil
+    var onShuffleToggle: (() -> ShuffleMode)? = nil
+    var shuffleMode: ShuffleMode = .off
     
     @State private var selectedPage = 0
     
@@ -441,7 +462,11 @@ struct ExpandedPlayerView: View {
                         isLiked: isLiked,
                         onPlayPause: onPlayPause,
                         onStop: onStop,
-                        onLike: onLike
+                        onLike: onLike,
+                        onNext: onNext,
+                        onPrevious: onPrevious,
+                        onShuffleToggle: onShuffleToggle,
+                        shuffleMode: shuffleMode
                     )
                     .tag(0)
                     
@@ -479,6 +504,12 @@ private struct MainPlayerPage: View {
     let onPlayPause: () -> Void
     let onStop: () -> Void
     let onLike: () -> Void
+    var onNext: (() -> Void)? = nil
+    var onPrevious: (() -> Void)? = nil
+    var onShuffleToggle: (() -> ShuffleMode)? = nil
+    var shuffleMode: ShuffleMode = .off
+    
+    @State private var currentShuffleMode: ShuffleMode = .off
     
     var body: some View {
         VStack(spacing: 32) {
@@ -528,37 +559,61 @@ private struct MainPlayerPage: View {
             }
             .padding(.horizontal, 32)
             
+            // Shuffle indicator
+            if currentShuffleMode != .off {
+                HStack(spacing: 4) {
+                    Image(systemName: currentShuffleMode.icon)
+                    Text(currentShuffleMode.rawValue)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(Color.secondary.opacity(0.1))
+                .clipShape(Capsule())
+            }
+            
             // Main controls
-            HStack(spacing: 24) {
-                Button(action: onLike) {
-                    Image(systemName: isLiked ? "heart.fill" : "heart")
-                        .font(.title2)
-                        .foregroundStyle(isLiked ? .red : .primary)
+            HStack(spacing: 20) {
+                // Shuffle button
+                Button {
+                    if let toggle = onShuffleToggle {
+                        currentShuffleMode = toggle()
+                    }
+                } label: {
+                    Image(systemName: currentShuffleMode.icon)
+                        .font(.title3)
+                        .foregroundStyle(currentShuffleMode != .off ? Color.accentColor : Color.primary)
                 }
                 
-                Button(action: onStop) {
+                // Previous button
+                Button {
+                    onPrevious?()
+                } label: {
                     Image(systemName: "backward.end.fill")
                         .font(.title)
                 }
-                .padding(.leading, 8)
                 
+                // Play/Pause button
                 Button(action: onPlayPause) {
                     Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
                         .font(.system(size: 72))
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, 8)
                 
-                Button(action: {}) {
+                // Next button
+                Button {
+                    onNext?()
+                } label: {
                     Image(systemName: "forward.end.fill")
                         .font(.title)
                 }
-                .disabled(true)
-                .opacity(0.3)
-                .padding(.trailing, 8)
                 
-                Button(action: onStop) {
-                    Image(systemName: "stop.fill")
-                        .font(.title2)
+                // Like button
+                Button(action: onLike) {
+                    Image(systemName: isLiked ? "heart.fill" : "heart")
+                        .font(.title3)
+                        .foregroundStyle(isLiked ? .red : .primary)
                 }
             }
             .padding(.vertical)
@@ -566,6 +621,9 @@ private struct MainPlayerPage: View {
             Spacer()
         }
         .padding()
+        .onAppear {
+            currentShuffleMode = shuffleMode
+        }
     }
     
     private var progressValue: Double {
@@ -883,6 +941,7 @@ struct AlbumArtworkView: View {
     let size: CGFloat
     #if os(iOS)
     @State private var artworkImage: UIImage?
+    @State private var isLoading = false
     #endif
     
     var body: some View {
@@ -901,14 +960,17 @@ struct AlbumArtworkView: View {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+            } else if isLoading {
+                ProgressView()
+                    .scaleEffect(size > 100 ? 1.0 : 0.5)
             } else {
                 Image(systemName: "music.note")
-                    .font(.system(size: size * 0.3))
+                    .font(.system(size: size * 0.4))
                     .foregroundStyle(.white.opacity(0.8))
             }
             #else
             Image(systemName: "music.note")
-                .font(.system(size: size * 0.3))
+                .font(.system(size: size * 0.4))
                 .foregroundStyle(.white.opacity(0.8))
             #endif
         }
@@ -919,6 +981,7 @@ struct AlbumArtworkView: View {
             loadArtwork()
         }
         .onChange(of: track.id) { _ in
+            artworkImage = nil
             loadArtwork()
         }
         #endif
@@ -926,14 +989,112 @@ struct AlbumArtworkView: View {
     
     #if os(iOS)
     private func loadArtwork() {
-        // Load from saved artwork path
+        // 1. Check if we already have the image
+        if artworkImage != nil { return }
+        
+        // 2. Check saved artwork path in UserDefaults
         if let path = UserDefaults.standard.string(forKey: "artwork_\(track.id.uuidString)"),
            FileManager.default.fileExists(atPath: path),
            let data = FileManager.default.contents(atPath: path),
            let image = UIImage(data: data) {
             artworkImage = image
-        } else {
-            artworkImage = nil
+            return
+        }
+        
+        // 3. Check track's artworkURL
+        if let artworkURL = track.artworkURL {
+            loadFromURL(artworkURL)
+            return
+        }
+        
+        // 4. Try to extract from audio file metadata
+        extractEmbeddedArtwork()
+    }
+    
+    private func loadFromURL(_ url: URL) {
+        isLoading = true
+        
+        Task {
+            do {
+                if url.isFileURL {
+                    // Local file
+                    if let data = try? Data(contentsOf: url),
+                       let image = UIImage(data: data) {
+                        await MainActor.run {
+                            self.artworkImage = image
+                            self.isLoading = false
+                        }
+                        // Save for future use
+                        saveArtwork(data)
+                    }
+                } else {
+                    // Remote URL
+                    let (data, _) = try await URLSession.shared.data(from: url)
+                    if let image = UIImage(data: data) {
+                        await MainActor.run {
+                            self.artworkImage = image
+                            self.isLoading = false
+                        }
+                        // Save for future use
+                        saveArtwork(data)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isLoading = false
+                }
+            }
+        }
+    }
+    
+    private func extractEmbeddedArtwork() {
+        guard track.fileURL.isFileURL else { return }
+        
+        isLoading = true
+        
+        Task {
+            let asset = AVURLAsset(url: track.fileURL)
+            
+            // Try to load artwork from common metadata
+            do {
+                let metadata = try await asset.load(.commonMetadata)
+                
+                for item in metadata {
+                    if let key = item.commonKey, key == .commonKeyArtwork {
+                        if let data = try? await item.load(.dataValue),
+                           let image = UIImage(data: data) {
+                            await MainActor.run {
+                                self.artworkImage = image
+                                self.isLoading = false
+                            }
+                            // Save for future use
+                            saveArtwork(data)
+                            return
+                        }
+                    }
+                }
+            } catch {
+                // Metadata extraction failed
+            }
+            
+            await MainActor.run {
+                self.isLoading = false
+            }
+        }
+    }
+    
+    private func saveArtwork(_ data: Data) {
+        let artworkDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Artwork")
+        
+        do {
+            try FileManager.default.createDirectory(at: artworkDir, withIntermediateDirectories: true)
+            let filename = "\(track.id.uuidString).jpg"
+            let artworkURL = artworkDir.appendingPathComponent(filename)
+            try data.write(to: artworkURL)
+            UserDefaults.standard.set(artworkURL.path, forKey: "artwork_\(track.id.uuidString)")
+        } catch {
+            // Failed to save, but we still have the image in memory
         }
     }
     #endif
@@ -1117,6 +1278,13 @@ struct SpotifyImportSheet: View {
                 }
                 
                 Spacer()
+                
+                if isLoading {
+                    Text("You can dismiss this sheet - download will continue in background")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
             }
             .padding()
             #if os(iOS)
@@ -1124,13 +1292,11 @@ struct SpotifyImportSheet: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                        .disabled(isLoading)
+                    Button(isLoading ? "Minimize" : "Cancel", action: onCancel)
                 }
             }
         }
         .presentationDetents([.medium])
-        .interactiveDismissDisabled(isLoading)
     }
 }
 

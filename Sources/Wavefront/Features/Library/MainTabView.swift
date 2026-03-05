@@ -285,20 +285,25 @@ struct MediaTab: View {
                 progress: viewModel.spotifyDownloadProgress,
                 importStatus: viewModel.spotifyImportStatus,
                 onImport: {
-                    Task {
+                    let urlToImport = spotifyURL
+                    spotifyURL = ""
+                    // Start download task that continues in background
+                    Task.detached {
                         do {
-                            try await viewModel.importFromSpotify(urlString: spotifyURL)
-                            spotifyURL = ""
-                            showingSpotifySheet = false
+                            try await viewModel.importFromSpotify(urlString: urlToImport)
                         } catch {
-                            viewModel.setError("Spotify import failed: \(error.localizedDescription)")
-                            showingSpotifySheet = false
+                            await MainActor.run {
+                                viewModel.setError("Spotify import failed: \(error.localizedDescription)")
+                            }
                         }
                     }
                 },
                 onCancel: {
                     showingSpotifySheet = false
-                    spotifyURL = ""
+                    // Only clear URL if not currently downloading
+                    if viewModel.spotifyDownloadProgress == nil {
+                        spotifyURL = ""
+                    }
                 }
             )
         }
@@ -735,20 +740,25 @@ struct SongsTab: View {
                 progress: viewModel.spotifyDownloadProgress,
                 importStatus: viewModel.spotifyImportStatus,
                 onImport: {
-                    Task {
+                    let urlToImport = spotifyURL
+                    spotifyURL = ""
+                    // Start download task that continues in background
+                    Task.detached {
                         do {
-                            try await viewModel.importFromSpotify(urlString: spotifyURL)
-                            spotifyURL = ""
-                            showingSpotifySheet = false
+                            try await viewModel.importFromSpotify(urlString: urlToImport)
                         } catch {
-                            viewModel.setError("Spotify import failed: \(error.localizedDescription)")
-                            showingSpotifySheet = false
+                            await MainActor.run {
+                                viewModel.setError("Spotify import failed: \(error.localizedDescription)")
+                            }
                         }
                     }
                 },
                 onCancel: {
                     showingSpotifySheet = false
-                    spotifyURL = ""
+                    // Only clear URL if not currently downloading
+                    if viewModel.spotifyDownloadProgress == nil {
+                        spotifyURL = ""
+                    }
                 }
             )
         }
@@ -1081,6 +1091,10 @@ struct HistoryRow: View {
 struct SettingsTab: View {
     @ObservedObject var viewModel: MusicLibraryViewModel
     @State private var showingSourcesSheet = false
+    @State private var showingLastFMSettings = false
+    @State private var isRefreshingMetadata = false
+    @State private var metadataRefreshProgress: Double = 0
+    @State private var metadataRefreshStatus: String?
     
     var body: some View {
         NavigationStack {
@@ -1107,7 +1121,75 @@ struct SettingsTab: View {
                     }
                 }
                 
+                // Metadata Section
+                Section {
+                    Button {
+                        refreshMetadataWithLastFM()
+                    } label: {
+                        HStack {
+                            Label("Refresh from Last.fm", systemImage: "arrow.triangle.2.circlepath")
+                            Spacer()
+                            if isRefreshingMetadata {
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isRefreshingMetadata || viewModel.tracks.isEmpty)
+                    
+                    if isRefreshingMetadata, let status = metadataRefreshStatus {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ProgressView(value: metadataRefreshProgress, total: 1.0)
+                                .tint(.red)
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } header: {
+                    Label("Metadata", systemImage: "tag")
+                } footer: {
+                    Text("Use Last.fm to automatically fetch artist, album, and track information based on song titles.")
+                }
+                
+                // Last.fm Section
+                Section {
+                    NavigationLink {
+                        LastFMSettingsView()
+                    } label: {
+                        HStack {
+                            Label("Account", systemImage: "person.crop.circle")
+                            Spacer()
+                            if LastFMService.shared.isAuthenticated {
+                                Text(LastFMService.shared.username ?? "Connected")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Not signed in")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    
+                    Toggle("Scrobbling", isOn: Binding(
+                        get: { LastFMService.shared.isScrobblingEnabled },
+                        set: { LastFMService.shared.setScrobblingEnabled($0) }
+                    ))
+                } header: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "music.note.tv")
+                        Text("Last.fm")
+                    }
+                } footer: {
+                    Text("Track your listening history and get personalized recommendations.")
+                }
+                
                 Section("Playback") {
+                    HStack {
+                        Label("Shuffle Mode", systemImage: ShuffleService.shared.currentMode.icon)
+                        Spacer()
+                        Text(ShuffleService.shared.currentMode.rawValue)
+                            .foregroundStyle(.secondary)
+                    }
+                    
                     HStack {
                         Label("Audio Quality", systemImage: "waveform")
                         Spacer()
@@ -1133,6 +1215,26 @@ struct SettingsTab: View {
         }
         .sheet(isPresented: $showingSourcesSheet) {
             SourcesSettingsView(viewModel: viewModel)
+        }
+    }
+    
+    private func refreshMetadataWithLastFM() {
+        isRefreshingMetadata = true
+        metadataRefreshProgress = 0
+        metadataRefreshStatus = "Starting..."
+        
+        Task {
+            await viewModel.refreshMetadataFromLastFM { progress, status in
+                Task { @MainActor in
+                    metadataRefreshProgress = progress
+                    metadataRefreshStatus = status
+                }
+            }
+            
+            await MainActor.run {
+                isRefreshingMetadata = false
+                metadataRefreshStatus = nil
+            }
         }
     }
 }
