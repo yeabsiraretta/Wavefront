@@ -68,13 +68,51 @@ jobs:
           PR_TITLE="${{ github.event.pull_request.title }}"
           PR_BODY="${{ github.event.pull_request.body }}"
           PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
           
-          NOTES="## What's Changed\n\n"
-          NOTES+="- $PR_TITLE\n\n"
-          NOTES+="**Full Changelog**: $PR_URL"
+          # Determine type from PR title prefix
+          TYPE="chore"
+          if [[ "$PR_TITLE" =~ ^feat ]]; then TYPE="feat"; fi
+          if [[ "$PR_TITLE" =~ ^fix ]]; then TYPE="fix"; fi
+          if [[ "$PR_TITLE" =~ ^docs ]]; then TYPE="docs"; fi
+          if [[ "$PR_TITLE" =~ ^refactor ]]; then TYPE="refactor"; fi
+          if [[ "$PR_TITLE" =~ ^test ]]; then TYPE="test"; fi
+          if [[ "$PR_TITLE" =~ ^ci ]]; then TYPE="ci"; fi
+          
+          cat > /tmp/notes.md << 'NOTES_EOF'
+          ## Description
+          
+          $PR_TITLE
+          
+          ## Type of Change
+          
+          - **Type**: `$TYPE`
+          - **Branch**: `$BRANCH`
+          
+          ## Pull Request
+          
+          - **PR**: #$PR_NUMBER
+          - **Author**: @$PR_AUTHOR
+          - **URL**: $PR_URL
+          
+          ## Full Changelog
+          
+          $PR_BODY
+          NOTES_EOF
+          
+          # Substitute variables
+          sed -i "s|\$PR_TITLE|$PR_TITLE|g" /tmp/notes.md
+          sed -i "s|\$TYPE|$TYPE|g" /tmp/notes.md
+          sed -i "s|\$BRANCH|$BRANCH|g" /tmp/notes.md
+          sed -i "s|\$PR_NUMBER|$PR_NUMBER|g" /tmp/notes.md
+          sed -i "s|\$PR_AUTHOR|$PR_AUTHOR|g" /tmp/notes.md
+          sed -i "s|\$PR_URL|$PR_URL|g" /tmp/notes.md
+          sed -i "s|\$PR_BODY|$PR_BODY|g" /tmp/notes.md
           
           echo "notes<<EOF" >> $GITHUB_OUTPUT
-          echo -e "$NOTES" >> $GITHUB_OUTPUT
+          cat /tmp/notes.md >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
