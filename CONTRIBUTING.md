@@ -182,14 +182,44 @@ Wavefront/
 └── Package.swift             # Swift Package definition
 ```
 
+## Branch Strategy
+
+All changes must go through a Pull Request to `main`. Direct pushes to `main` are not allowed.
+
+### Branch Naming
+
+```
+type/description
+```
+
+| Type | Use For |
+|------|---------|
+| `feature/` | New features |
+| `bugfix/` | Bug fixes |
+| `hotfix/` | Urgent production fixes |
+| `chore/` | Maintenance tasks |
+| `docs/` | Documentation |
+| `refactor/` | Code refactoring |
+| `test/` | Test additions |
+
+### Examples
+
+```bash
+git checkout -b feature/spotify-import
+git checkout -b bugfix/playback-crash
+git checkout -b hotfix/auth-fix
+```
+
 ## Making Changes
 
-1. Create a feature branch: `git checkout -b feature/my-feature`
+1. Create a branch: `git checkout -b feature/my-feature`
 2. Make your changes
 3. Run tests: `swift test`
 4. Commit with conventional format: `git commit -m "feat: add my feature"`
 5. Push: `git push origin feature/my-feature`
 6. Create a Pull Request
+7. Wait for CI checks and review approval
+8. Merge to main
 
 ## Troubleshooting
 

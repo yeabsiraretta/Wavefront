@@ -1,0 +1,77 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  validate-branch:
+    name: Validate Branch Name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch name
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Branch: $BRANCH"
+          
+          # Valid patterns: feature/*, bugfix/*, hotfix/*, chore/*, docs/*
+          if [[ ! "$BRANCH" =~ ^(feature|bugfix|hotfix|chore|docs|refactor|test)/.+ ]]; then
+            echo "❌ Invalid branch name: $BRANCH"
+            echo ""
+            echo "Branch must follow pattern: type/description"
+            echo "Valid types: feature, bugfix, hotfix, chore, docs, refactor, test"
+            echo ""
+            echo "Examples:"
+            echo "  feature/spotify-import"
+            echo "  bugfix/playback-issue"
+            echo "  hotfix/crash-on-launch"
+            exit 1
+          fi
+          
+          echo "✅ Valid branch name"
+
+  build:
+    name: Build & Test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Run Tests
+        run: swift test
+
+  lint:
+    name: Lint Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR commits
+        run: |
+          COMMITS=$(git log --format="%s" ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          
+          echo "Checking commits in PR..."
+          FAILED=0
+          
+          while IFS= read -r msg; do
+            [ -z "$msg" ] && continue
+            
+            # Check conventional commit format
+            if [[ ! "$msg" =~ ^(feat|fix|docs|style|refactor|test|chore|perf|ci|build|revert)(\(.+\))?:\ .+ ]]; then
+              echo "❌ Invalid commit: $msg"
+              FAILED=1
+            else
+              echo "✅ $msg"
+            fi
+          done <<< "$COMMITS"
+          
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "All commits must follow: type(scope): description"
+            exit 1
+          fi
