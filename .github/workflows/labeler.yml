@@ -1,49 +1,88 @@
-name: PR Labeler
+name: PR Automation
 
 on:
   pull_request:
-    types: [opened, edited]
+    types: [opened]
 
 jobs:
-  label:
-    name: Add Labels
+  setup-pr:
+    name: Setup PR
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - name: Add labels based on branch and title
+      - name: Auto-fill PR template and add labels
         uses: actions/github-script@v7
         with:
           script: |
             const pr = context.payload.pull_request;
             const branch = pr.head.ref;
-            const title = pr.title.toLowerCase();
+            const title = pr.title;
+            const titleLower = title.toLowerCase();
             const labels = [];
             
-            // Label based on branch prefix
-            if (branch.startsWith('feature/')) {
+            // Determine type from title/branch
+            let type = 'chore';
+            let typeLabel = '';
+            
+            if (titleLower.startsWith('feat') || branch.startsWith('feature/')) {
+              type = 'feat';
+              typeLabel = 'enhancement';
               labels.push('enhancement');
-            } else if (branch.startsWith('bugfix/') || branch.startsWith('fix/')) {
+            } else if (titleLower.startsWith('fix') || branch.startsWith('bugfix/') || branch.startsWith('hotfix/')) {
+              type = 'fix';
+              typeLabel = 'bug';
               labels.push('bug');
-            } else if (branch.startsWith('hotfix/')) {
-              labels.push('bug');
-            } else if (branch.startsWith('docs/')) {
+            } else if (titleLower.startsWith('docs') || branch.startsWith('docs/')) {
+              type = 'docs';
+              typeLabel = 'documentation';
               labels.push('documentation');
-            } else if (branch.startsWith('chore/')) {
-              labels.push('enhancement');
+            } else if (titleLower.startsWith('refactor') || branch.startsWith('refactor/')) {
+              type = 'refactor';
+            } else if (titleLower.startsWith('test') || branch.startsWith('test/')) {
+              type = 'test';
+            } else if (titleLower.startsWith('ci')) {
+              type = 'ci';
+            } else if (titleLower.startsWith('chore') || branch.startsWith('chore/')) {
+              type = 'chore';
             }
             
-            // Label based on title prefix
-            if (title.startsWith('feat')) {
-              if (!labels.includes('enhancement')) labels.push('enhancement');
-            } else if (title.startsWith('fix')) {
-              if (!labels.includes('bug')) labels.push('bug');
-            } else if (title.startsWith('docs')) {
-              if (!labels.includes('documentation')) labels.push('documentation');
+            // Build PR body with template
+            const body = `## Description
+
+${title}
+
+## Type of Change
+
+- [x] \`${type}\` - ${type === 'feat' ? 'New feature' : type === 'fix' ? 'Bug fix' : type === 'docs' ? 'Documentation' : type === 'refactor' ? 'Code refactoring' : type === 'test' ? 'Tests' : type === 'ci' ? 'CI/CD changes' : 'Maintenance'}${typeLabel ? ` → \`${typeLabel}\` label` : ''}
+
+## Branch
+
+\`${branch}\`
+
+## Checklist
+
+- [x] Code follows project style guidelines
+- [ ] Self-reviewed my code
+- [ ] Added/updated tests if needed
+- [ ] Documentation updated if needed
+- [ ] All CI checks pass
+`;
+            
+            // Update PR body if it's empty or just the template
+            const currentBody = pr.body || '';
+            if (currentBody.trim() === '' || currentBody.includes('<!-- Brief description of changes -->')) {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                body: body
+              });
+              console.log('PR body updated with template');
             }
             
-            // Add labels if any were detected
+            // Add labels
             if (labels.length > 0) {
               await github.rest.issues.addLabels({
                 owner: context.repo.owner,
@@ -52,6 +91,4 @@ jobs:
                 labels: labels
               });
               console.log(`Added labels: ${labels.join(', ')}`);
-            } else {
-              console.log('No labels to add based on branch/title');
             }

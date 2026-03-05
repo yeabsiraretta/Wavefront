@@ -7,10 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-03-05
+
 ### Added
-- CodeQL code scanning workflow
-- PR checks with branch name validation
-- Branch protection for main
+- Auto-release workflow on PR merge
+- PR auto-labeling based on branch/title
+- Dependabot configuration for dependency updates
+- CodeQL code scanning (optional/non-blocking)
+
+### Changed
+- Build & Test now non-blocking for faster PR merges
+- Switched from swift build to xcodebuild for CI compatibility
+- Simplified security workflows to run on Ubuntu
+
+### Fixed
+- AMSMB2 build failure in CI (libsmb2 compilation)
+- iOS Simulator destination for GitHub Actions
+- Dependabot branch validation
 
 ## [1.1.0] - 2026-03-04
 
@@ -50,6 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AMSMB2 3.1.0
 - YouTubeKit 0.4.0
 
-[Unreleased]: https://github.com/yeabsiraretta/Wavefront/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/yeabsiraretta/Wavefront/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/yeabsiraretta/Wavefront/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/yeabsiraretta/Wavefront/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/yeabsiraretta/Wavefront/releases/tag/v1.0.0
