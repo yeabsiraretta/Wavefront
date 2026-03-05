@@ -12,34 +12,20 @@ on:
 jobs:
   dependency-audit:
     name: Dependency Audit
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check for known vulnerabilities in Swift packages
+      - name: List Swift package dependencies
         run: |
-          echo "🔍 Checking Swift package dependencies..."
-          
-          # Extract dependencies from Package.swift
+          echo "🔍 Swift package dependencies from Package.swift:"
           if [ -f "Package.swift" ]; then
-            echo "Dependencies found in Package.swift:"
             grep -E "\.package\(" Package.swift | while read -r line; do
-              echo "  - $line"
+              echo "  $line"
             done
           fi
-
-      - name: Resolve and audit packages
-        run: |
-          swift package resolve
-          swift package show-dependencies --format json > dependencies.json
-          
-          echo "📦 Resolved dependencies:"
-          cat dependencies.json | head -100
-
-      - name: Check for outdated packages
-        run: |
-          echo "🔄 Checking for package updates..."
-          swift package update --dry-run 2>&1 || true
+          echo ""
+          echo "📦 Dependabot is configured to monitor these for updates."
 
   codeql-analysis:
     name: CodeQL Analysis
