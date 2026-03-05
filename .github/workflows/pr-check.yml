@@ -15,8 +15,8 @@ jobs:
           BRANCH="${{ github.head_ref }}"
           echo "Branch: $BRANCH"
           
-          # Valid patterns: feature/*, bugfix/*, hotfix/*, chore/*, docs/*
-          if [[ ! "$BRANCH" =~ ^(feature|bugfix|hotfix|chore|docs|refactor|test)/.+ ]]; then
+          # Valid patterns: feature/*, bugfix/*, hotfix/*, chore/*, docs/*, dependabot/*
+          if [[ ! "$BRANCH" =~ ^(feature|bugfix|hotfix|chore|docs|refactor|test|dependabot)/.+ ]]; then
             echo "❌ Invalid branch name: $BRANCH"
             echo ""
             echo "Branch must follow pattern: type/description"
@@ -45,14 +45,14 @@ jobs:
         run: |
           xcodebuild -project WavefrontApp.xcodeproj \
             -scheme WavefrontApp \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination 'generic/platform=iOS Simulator' \
             build
 
       - name: Run Tests
         run: |
           xcodebuild -project WavefrontApp.xcodeproj \
             -scheme WavefrontApp \
-            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -destination 'generic/platform=iOS Simulator' \
             test || echo "Tests completed (some may be skipped)"
 
   lint:
