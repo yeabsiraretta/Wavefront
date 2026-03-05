@@ -1,0 +1,114 @@
+name: Auto Release
+
+on:
+  pull_request:
+    branches: [main]
+    types: [closed]
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get latest tag
+        id: latest_tag
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$LATEST" >> $GITHUB_OUTPUT
+          echo "Latest tag: $LATEST"
+
+      - name: Calculate next version
+        id: next_version
+        run: |
+          LATEST="${{ steps.latest_tag.outputs.tag }}"
+          # Remove 'v' prefix
+          VERSION="${LATEST#v}"
+          
+          # Parse version components
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+          
+          # Determine version bump based on PR title/commits
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          
+          if [[ "$PR_TITLE" =~ ^feat ]]; then
+            # Feature = minor bump
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          elif [[ "$PR_TITLE" =~ ^fix ]] || [[ "$PR_TITLE" =~ ^bugfix ]]; then
+            # Fix = patch bump
+            PATCH=$((PATCH + 1))
+          else
+            # Default = patch bump
+            PATCH=$((PATCH + 1))
+          fi
+          
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Next version: $NEW_VERSION"
+
+      - name: Update CHANGELOG
+        run: |
+          NEW_VERSION="${{ steps.next_version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          
+          # Create temp file with new entry
+          echo "" > /tmp/entry.txt
+          echo "## [$NEW_VERSION] - $DATE" >> /tmp/entry.txt
+          echo "" >> /tmp/entry.txt
+          echo "- $PR_TITLE (#$PR_NUMBER)" >> /tmp/entry.txt
+          
+          # Insert after Unreleased section
+          awk '/## \[Unreleased\]/{print; getline; print; while((getline line < "/tmp/entry.txt") > 0) print line; next}1' CHANGELOG.md > /tmp/changelog_new.md
+          mv /tmp/changelog_new.md CHANGELOG.md
+
+      - name: Commit changelog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: update CHANGELOG for ${{ steps.next_version.outputs.version }}" || echo "No changes to commit"
+          git push
+
+      - name: Create and push tag
+        run: |
+          NEW_VERSION="${{ steps.next_version.outputs.version }}"
+          git tag -a "$NEW_VERSION" -m "Release $NEW_VERSION"
+          git push origin "$NEW_VERSION"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          
+          NOTES="## What's Changed\n\n"
+          NOTES+="- $PR_TITLE\n\n"
+          NOTES+="**Full Changelog**: $PR_URL"
+          
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.next_version.outputs.version }}
+          name: Release ${{ steps.next_version.outputs.version }}
+          body: ${{ steps.notes.outputs.notes }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
