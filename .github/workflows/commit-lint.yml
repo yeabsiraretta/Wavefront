@@ -1,0 +1,72 @@
+name: Commit Message Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit messages
+        run: |
+          # Get commit messages to check
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            COMMITS=$(git log --format="%s" ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }})
+          else
+            COMMITS=$(git log --format="%s" -1)
+          fi
+
+          echo "Checking commit messages..."
+          
+          FAILED=0
+          while IFS= read -r msg; do
+            [ -z "$msg" ] && continue
+            
+            # Rule 1: Must be single line (no newlines in subject)
+            if [ $(echo "$msg" | wc -l) -gt 1 ]; then
+              echo "❌ Multi-line subject: $msg"
+              FAILED=1
+              continue
+            fi
+            
+            # Rule 2: Max 72 characters
+            if [ ${#msg} -gt 72 ]; then
+              echo "❌ Too long (${#msg} > 72 chars): $msg"
+              FAILED=1
+              continue
+            fi
+            
+            # Rule 3: No trailing period
+            if [[ "$msg" == *. ]]; then
+              echo "❌ Trailing period: $msg"
+              FAILED=1
+              continue
+            fi
+            
+            # Rule 4: Start with capital letter
+            first_char="${msg:0:1}"
+            if [[ ! "$first_char" =~ [A-Z] ]]; then
+              echo "❌ Must start with capital letter: $msg"
+              FAILED=1
+              continue
+            fi
+            
+            echo "✅ $msg"
+          done <<< "$COMMITS"
+
+          if [ $FAILED -eq 1 ]; then
+            echo ""
+            echo "Commit message rules:"
+            echo "  - Single line only"
+            echo "  - Max 72 characters"
+            echo "  - Start with capital letter"
+            echo "  - No trailing period"
+            exit 1
+          fi
