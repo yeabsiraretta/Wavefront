@@ -14,7 +14,7 @@ jobs:
     name: Dependency Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: List Swift package dependencies
         run: |
@@ -33,7 +33,7 @@ jobs:
     if: github.event_name == 'pull_request'
     continue-on-error: true  # Don't fail if Dependency graph not enabled
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - name: Dependency Review
         uses: actions/dependency-review-action@v4
@@ -45,7 +45,7 @@ jobs:
     name: Secrets Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
