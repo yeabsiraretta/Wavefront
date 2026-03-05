@@ -50,10 +50,9 @@ jobs:
               continue
             fi
             
-            # Rule 4: Start with capital letter
-            first_char="${msg:0:1}"
-            if [[ ! "$first_char" =~ [A-Z] ]]; then
-              echo "❌ Must start with capital letter: $msg"
+            # Rule 4: Must start with conventional commit type
+            if [[ ! "$msg" =~ ^(feat|fix|docs|style|refactor|test|chore|perf|ci|build|revert)(\(.+\))?:\ .+ ]]; then
+              echo "❌ Missing conventional commit type: $msg"
               FAILED=1
               continue
             fi
@@ -66,7 +65,8 @@ jobs:
             echo "Commit message rules:"
             echo "  - Single line only"
             echo "  - Max 72 characters"
-            echo "  - Start with capital letter"
             echo "  - No trailing period"
+            echo "  - Must start with type: feat|fix|docs|style|refactor|test|chore|perf|ci|build|revert"
+            echo "  - Format: type: message  OR  type(scope): message"
             exit 1
           fi
