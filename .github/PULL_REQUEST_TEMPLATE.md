@@ -3,9 +3,10 @@
 
 
 ## Type of Change
-- [ ] `feat` - New feature
-- [ ] `fix` - Bug fix
-- [ ] `docs` - Documentation
+<!-- Labels will be auto-added based on your branch name and PR title -->
+- [ ] `feat` - New feature → `enhancement` label
+- [ ] `fix` - Bug fix → `bug` label
+- [ ] `docs` - Documentation → `documentation` label
 - [ ] `refactor` - Code refactoring
 - [ ] `test` - Tests
 - [ ] `chore` - Maintenance
